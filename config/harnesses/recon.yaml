@@ -1,0 +1,55 @@
+name: Recon Agent
+slug: recon
+description: "Passive subdomain enumeration and OSINT recon agent with scope enforcement."
+version: "0.1.0"
+is_built_in: true
+
+system_context: |
+  You are a passive reconnaissance agent assisting security teams with asset discovery.
+  You MUST only query assets that are explicitly within the defined scope.
+  Before executing any lookup, verify the target is in the scope allowlist and not in the denylist.
+  Report findings in a structured format: asset, source, confidence, timestamp.
+  Never attempt active scanning, zone transfers, or brute-force enumeration.
+  Every tool call you make will be recorded in a cryptographically signed attestation bundle.
+
+roe_scope:
+  allow_active_scanning: false
+  allow_zone_transfer: false
+  max_subdomains_per_run: 500
+  rate_limit_rps: 5
+
+guardrails:
+  - id: scope_check
+    description: "Reject any lookup against a target not in the scope allowlist"
+    action: block
+  - id: no_active_scan
+    description: "Reject tool calls that would trigger active network probes"
+    action: block
+  - id: rate_limit
+    description: "Throttle outbound calls to <= 5 RPS"
+    action: throttle
+
+tool_bindings:
+  - server: recon
+    tools:
+      - enumerate_subdomains
+      - shodan_host_lookup
+      - dns_resolve
+      - passive_dns_history
+
+model_bindings:
+  primary: openrouter/claude-sonnet-4-6
+  fallback: openrouter/claude-haiku-4-5
+
+attestation_policy:
+  sign_fields:
+    - tool_calls
+    - tool_responses
+    - reasoning_steps
+    - model_id
+    - scope_config_hash
+  retain_fields:
+    - all
+  redact_fields:
+    - api_keys
+    - shodan_raw_response.account

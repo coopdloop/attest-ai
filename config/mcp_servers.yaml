@@ -1,0 +1,18 @@
+# MCP tool server registry for agent_orchestrator
+# Each entry maps a server name to its HTTP endpoint
+
+servers:
+  recon:
+    url: "${RECON_AGENT_TOOLS_URL:-http://recon_agent_tools:8100}"
+    description: "Subdomain enumeration and passive OSINT recon tools"
+    transport: http
+
+  threat_intel:
+    url: "${THREAT_INTEL_AGENT_TOOLS_URL:-http://threat_intel_agent_tools:8101}"
+    description: "IOC enrichment via VT, OTX, and Shodan"
+    transport: http
+
+  redteam:
+    url: "${REDTEAM_AGENT_TOOLS_URL:-http://redteam_agent_tools:8102}"
+    description: "Prompt-injection and jailbreak test suite runner"
+    transport: http

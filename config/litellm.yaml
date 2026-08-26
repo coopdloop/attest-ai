@@ -1,0 +1,107 @@
+# LiteLLM model routing config for agent_orchestrator
+# Add API keys via environment variables — never commit them here.
+# OpenRouter is the primary provider; direct Anthropic/OpenAI/Ollama are
+# available as fallbacks or alternatives.
+
+model_list:
+
+  # ── OpenRouter (recommended — single key, access to all models) ──────────────
+
+  - model_name: openrouter/claude-sonnet-4-6
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-4-6
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/claude-haiku-4-5
+    litellm_params:
+      model: openrouter/anthropic/claude-haiku-4-5-20251001
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/gpt-4o
+    litellm_params:
+      model: openrouter/openai/gpt-4o
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/gpt-4o-mini
+    litellm_params:
+      model: openrouter/openai/gpt-4o-mini
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/llama-3.1-70b
+    litellm_params:
+      model: openrouter/meta-llama/llama-3.1-70b-instruct
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/gemini-flash
+    litellm_params:
+      model: openrouter/google/gemini-flash-1.5
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  - model_name: openrouter/mistral-7b
+    litellm_params:
+      model: openrouter/mistralai/mistral-7b-instruct
+      api_key: "${OPENROUTER_API_KEY}"
+      api_base: "https://openrouter.ai/api/v1"
+
+  # ── Direct Anthropic (optional — requires ANTHROPIC_API_KEY) ─────────────────
+
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: "${ANTHROPIC_API_KEY}"
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: "${ANTHROPIC_API_KEY}"
+
+  # ── Direct OpenAI (optional — requires OPENAI_API_KEY) ───────────────────────
+
+  - model_name: gpt-4o
+    litellm_params:
+      model: openai/gpt-4o
+      api_key: "${OPENAI_API_KEY}"
+
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: "${OPENAI_API_KEY}"
+
+  # ── Local via Ollama (optional — no API key needed) ───────────────────────────
+
+  - model_name: local/llama3.2
+    litellm_params:
+      model: ollama/llama3.2
+      api_base: "${OLLAMA_BASE_URL}"
+
+  - model_name: local/qwen2.5-coder
+    litellm_params:
+      model: ollama/qwen2.5-coder
+      api_base: "${OLLAMA_BASE_URL}"
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  telemetry: false
+  num_retries: 3
+  request_timeout: 120
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    # OpenRouter primary → direct fallback
+    - openrouter/claude-sonnet-4-6:
+        - openrouter/claude-haiku-4-5
+    - openrouter/gpt-4o:
+        - openrouter/gpt-4o-mini
+    # Direct Anthropic fallback chain
+    - claude-sonnet-4-6:
+        - claude-haiku-4-5
+    - gpt-4o:
+        - gpt-4o-mini

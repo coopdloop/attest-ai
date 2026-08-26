@@ -1,0 +1,61 @@
+# docker-compose.dev.yml — local development overrides
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+version: "3.9"
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  minio:
+    ports:
+      - "9000:9000"
+      - "9001:9001"  # MinIO console
+
+  signing_service:
+    environment:
+      LOG_LEVEL: debug
+
+  auth_service:
+    environment:
+      LOG_LEVEL: debug
+      SINGLE_USER_MODE: "true"
+    # bind-mount local keys so the RSA keypair is available without a separate init step
+    volumes:
+      - ./keys:/keys
+
+  attestation_service:
+    environment:
+      LOG_LEVEL: debug
+      REKOR_ENABLED: "false"
+
+  agent_orchestrator:
+    environment:
+      LOG_LEVEL: debug
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    env_file:
+      - .env   # picks up OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+
+  context_library:
+    environment:
+      LOG_LEVEL: debug
+
+  api_gateway:
+    environment:
+      LOG_LEVEL: debug
+    # same keys volume so gateway can read jwt_public.pem
+    volumes:
+      - ./keys:/keys:ro
+
+  threat_intel_agent_tools:
+    env_file:
+      - .env   # picks up VT_API_KEY, OTX_API_KEY, SHODAN_API_KEY
+
+  recon_agent_tools:
+    env_file:
+      - .env   # picks up SHODAN_API_KEY

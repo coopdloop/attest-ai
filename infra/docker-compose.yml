@@ -1,0 +1,299 @@
+version: "3.9"
+
+# attest-ai — full stack compose
+# Starts all 10 services + postgres, redis, minio
+# For local dev overrides see docker-compose.dev.yml
+
+x-common-env: &common-env
+  LOG_LEVEL: info
+
+x-depends-infra: &depends-infra
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    minio:
+      condition: service_healthy
+
+services:
+
+  # ─── Infrastructure ──────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: attest_ai
+      POSTGRES_PASSWORD: attest_ai_secret
+      POSTGRES_DB: attest_ai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attest_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: attest_ai
+      MINIO_ROOT_PASSWORD: attest_ai_secret
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Optional: local LLM via Ollama
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   ports:
+  #     - "11434:11434"
+
+  # ─── Go services ─────────────────────────────────────────────────────────────
+
+  signing_service:
+    build:
+      context: ../services/signing_service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8083"
+      KEY_STORE_BACKEND: local
+      LOCAL_KEY_PATH: /keys/ed25519.key
+      AUDIT_LOG_DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+    volumes:
+      - signing_keys:/keys
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  auth_service:
+    build:
+      context: ../services/auth_service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8081"
+      DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+      JWT_PRIVATE_KEY_PATH: /keys/jwt_private.pem
+      SINGLE_USER_MODE: "false"
+    volumes:
+      - auth_keys:/keys
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  attestation_service:
+    build:
+      context: ../services
+      dockerfile: attestation_service/Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8082"
+      DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+      OBJECT_STORE_ENDPOINT: http://minio:9000
+      OBJECT_STORE_BUCKET: attest-ai-traces
+      OBJECT_STORE_ACCESS_KEY: attest_ai
+      OBJECT_STORE_SECRET_KEY: attest_ai_secret
+      SIGNING_SERVICE_URL: http://signing_service:8083
+      REKOR_ENABLED: "false"
+    <<: *depends-infra
+    ports:
+      - "8082:8082"
+    depends_on:
+      signing_service:
+        condition: service_started
+
+  trace_query_service:
+    build:
+      context: ../services/trace_query_service
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8084"
+      DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+      OBJECT_STORE_ENDPOINT: http://minio:9000
+      OBJECT_STORE_BUCKET: attest-ai-traces
+      OBJECT_STORE_ACCESS_KEY: attest_ai
+      OBJECT_STORE_SECRET_KEY: attest_ai_secret
+      SIGNING_SERVICE_URL: http://signing_service:8083
+    <<: *depends-infra
+    ports:
+      - "8084:8084"
+    depends_on:
+      attestation_service:
+        condition: service_started
+
+  api_gateway:
+    build:
+      context: ../services/api_gateway
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8080"
+      AUTH_SERVICE_URL: http://auth_service:8081
+      ORCHESTRATOR_URL: http://agent_orchestrator:8000
+      ATTESTATION_SERVICE_URL: http://attestation_service:8082
+      REDIS_URL: redis://redis:6379/0
+      JWT_PUBLIC_KEY_PATH: /keys/jwt_public.pem
+    volumes:
+      - auth_keys:/keys:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth_service:
+        condition: service_started
+      agent_orchestrator:
+        condition: service_started
+      attestation_service:
+        condition: service_started
+
+  # ─── Python services ──────────────────────────────────────────────────────────
+
+  context_library:
+    build:
+      context: ../services/context_library
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8001"
+      DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+      GIT_REPO_PATH: /data/harness-configs
+    volumes:
+      - harness_configs:/data/harness-configs
+      - ../config/harnesses:/config/harnesses:ro
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  agent_orchestrator:
+    build:
+      context: ../services/agent_orchestrator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8000"
+      DATABASE_URL: postgres://attest_ai:attest_ai_secret@postgres:5432/attest_ai
+      ATTESTATION_SERVICE_URL: http://attestation_service:8082
+      CONTEXT_LIBRARY_URL: http://context_library:8001
+      LITELLM_CONFIG_PATH: /config/litellm.yaml
+      MCP_SERVER_REGISTRY_PATH: /config/mcp_servers.yaml
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+    volumes:
+      - ../config:/config:ro
+    ports:
+      - "8000:8000"
+    <<: *depends-infra
+    depends_on:
+      attestation_service:
+        condition: service_started
+      context_library:
+        condition: service_started
+      recon_agent_tools:
+        condition: service_started
+      threat_intel_agent_tools:
+        condition: service_started
+      redteam_agent_tools:
+        condition: service_started
+
+  recon_agent_tools:
+    build:
+      context: ../services/recon_agent_tools
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8100"
+      SCOPE_CONFIG_PATH: /config/scope.yaml
+    volumes:
+      - ../config:/config:ro
+    ports:
+      - "8100:8100"
+
+  threat_intel_agent_tools:
+    build:
+      context: ../services/threat_intel_agent_tools
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8101"
+      REDIS_URL: redis://redis:6379/1
+    ports:
+      - "8101:8101"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redteam_agent_tools:
+    build:
+      context: ../services/redteam_agent_tools
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      PORT: "8102"
+      PAYLOAD_LIBRARY_PATH: /config/payloads
+      DEFAULT_TARGET_TIMEOUT_MS: "15000"
+    volumes:
+      - ../config:/config:ro
+    ports:
+      - "8102:8102"
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  signing_keys:
+  auth_keys:
+  harness_configs:
+  # ollama_data:
+
+networks:
+  default:
+    name: attest-ai

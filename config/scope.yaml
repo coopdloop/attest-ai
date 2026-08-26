@@ -1,0 +1,24 @@
+# Default scope/ROE config for recon_agent_tools
+# Overridden per-harness via context_library attestation_policy
+
+scope:
+  # Domains/CIDRs explicitly in scope (empty = deny all by default)
+  allowlist: []
+
+  # Domains/CIDRs always excluded regardless of allowlist
+  denylist:
+    - "0.0.0.0/8"
+    - "10.0.0.0/8"
+    - "127.0.0.0/8"
+    - "169.254.0.0/16"
+    - "172.16.0.0/12"
+    - "192.168.0.0/16"
+    - "::1/128"
+    - "fc00::/7"
+
+roe:
+  # Only passive lookups permitted by default (no active scanning)
+  allow_active_scanning: false
+  allow_zone_transfer: false
+  max_subdomains_per_run: 500
+  rate_limit_rps: 5

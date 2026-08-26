@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package signing.v1;
+
+option go_package = "github.com/attest-ai/signing_service/proto/signingpb";
+
+// SigningService — isolated Ed25519 key custody and attestation signing
+service SigningService {
+  // Sign a digest and return the Ed25519 signature
+  rpc Sign(SignRequest) returns (SignResponse);
+
+  // Get the public key for signature verification
+  rpc GetPublicKey(GetPublicKeyRequest) returns (GetPublicKeyResponse);
+
+  // Rotate the keypair for an org (generates new keypair, retires old)
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+}
+
+message SignRequest {
+  string org_id      = 1; // org whose key to sign with
+  string key_id      = 2; // specific key version (empty = use current)
+  bytes  digest      = 3; // raw bytes to sign (typically SHA-256 hash)
+  string caller      = 4; // calling service name for audit log
+}
+
+message SignResponse {
+  string key_id     = 1; // key ID used
+  bytes  signature  = 2; // Ed25519 signature (64 bytes)
+  string signed_at  = 3; // RFC3339 timestamp
+}
+
+message GetPublicKeyRequest {
+  string org_id  = 1;
+  string key_id  = 2; // empty = current key
+}
+
+message GetPublicKeyResponse {
+  string key_id    = 1;
+  bytes  public_key = 2; // Ed25519 public key (32 bytes)
+  string algorithm  = 3; // "Ed25519"
+  string created_at = 4; // RFC3339
+}
+
+message RotateKeyRequest {
+  string org_id  = 1;
+  string reason  = 2;
+}
+
+message RotateKeyResponse {
+  string new_key_id  = 1;
+  string old_key_id  = 2;
+  string rotated_at  = 3; // RFC3339
+}

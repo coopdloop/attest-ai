@@ -1,0 +1,49 @@
+# attest-ai
+
+> Every thought, tool call, and decision — signed, timestamped, and yours to verify.
+
+attest-ai is an agent gateway and glass-box chat platform purpose-built for security teams adopting agentic AI. It treats the reasoning trace itself as a first-class, cryptographically verifiable artifact — every session produces a hash-chained trace log and a signed attestation bundle covering tool calls, model identity, and policy.
+
+## What it does
+
+- **Cryptographically verifiable traces** — every agent session produces a Merkle-style hash-chained trace signed with Ed25519, independently verifiable by downstream consumers
+- **Glass-box chat UI** — renders reasoning steps, tool calls, retries, and model swaps as an intuitive trace timeline
+- **Cyber-native agent harnesses** — three pre-built harnesses (Recon, Threat Intel Enrichment, AI Red-Team) built on MCP tool bindings and LiteLLM model abstraction
+- **Dual invocation** — human-facing chat UI and machine-facing OpenAI-compatible + attested invoke API
+- **Single-user to multi-tenant** — deploys the same way from local single-user to full org/VPC mode without re-architecting
+
+## Services
+
+| Service | Port | Language |
+|---------|------|----------|
+| api_gateway | 8080 | Go/gin |
+| auth_service | 8081 | Go/gin |
+| attestation_service | 8082 | Go/gin |
+| signing_service | 8083 | Go/gRPC |
+| trace_query_service | 8084 | Go/gin |
+| agent_orchestrator | 8000 | Python/FastAPI |
+| context_library | 8001 | Python/FastAPI |
+| recon_agent_tools | 8100 | Python/FastAPI/MCP |
+| threat_intel_agent_tools | 8101 | Python/FastAPI/MCP |
+| redteam_agent_tools | 8102 | Python/FastAPI/MCP |
+
+## Quick start
+
+```bash
+# Start all services
+docker compose up -d
+
+# Run migrations
+docker compose exec postgres psql -U attest_ai -f /migrations/all.sql
+```
+
+## Build progress
+
+See [BUILD_STATUS.md](./BUILD_STATUS.md) for a complete feature-by-feature tracking of implementation progress.
+
+## Target users
+
+- Security Engineers adopting agentic AI for triage, recon, and IR workflows
+- AI Security Engineers building, testing, and red-teaming other AI systems
+- Security/compliance leadership needing audit trails to approve agent usage
+- Downstream agentic pipelines that need to verify attest-ai completions

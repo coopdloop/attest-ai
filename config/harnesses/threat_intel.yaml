@@ -1,0 +1,59 @@
+name: Threat Intel Enrichment Agent
+slug: threat_intel
+description: "IOC enrichment via VirusTotal, AlienVault OTX, and Shodan with data-leakage audit."
+version: "0.1.0"
+is_built_in: true
+
+system_context: |
+  You are a threat intelligence enrichment agent. Given one or more IOCs (IPs, domains, hashes, URLs),
+  you enrich them against configured threat intel sources and return structured findings.
+  You MUST log every outbound IOC submission — including which external service received which indicator —
+  so that operators can audit data leakage risk. Every submission is recorded in the attestation bundle.
+  Correlate findings across sources to identify campaign patterns where possible.
+  Classify IOC disposition as: malicious, suspicious, benign, or unknown.
+
+roe_scope:
+  max_iocs_per_run: 100
+  allowed_intel_sources:
+    - virustotal
+    - otx
+    - shodan
+
+guardrails:
+  - id: ioc_submission_audit
+    description: "Every outbound IOC submission must be logged with destination service and payload hash"
+    action: require_log
+  - id: rate_limit_external
+    description: "Throttle external API calls to avoid quota exhaustion"
+    action: throttle
+  - id: no_pii_in_ioc
+    description: "Warn if submitted IOC appears to contain PII (email addresses, personal names)"
+    action: warn
+
+tool_bindings:
+  - server: threat_intel
+    tools:
+      - vt_file_lookup
+      - vt_ip_lookup
+      - vt_domain_lookup
+      - vt_url_lookup
+      - otx_indicator_lookup
+      - shodan_host_enrichment
+      - correlate_campaign
+
+model_bindings:
+  primary: openrouter/claude-sonnet-4-6
+  fallback: openrouter/claude-haiku-4-5
+
+attestation_policy:
+  sign_fields:
+    - tool_calls
+    - tool_responses
+    - ioc_submission_log
+    - model_id
+    - policy_version
+  retain_fields:
+    - all
+  redact_fields:
+    - vt_api_response._raw
+    - otx_raw_response

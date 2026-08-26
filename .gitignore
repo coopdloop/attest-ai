@@ -1,0 +1,56 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.sum
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+.next/
+out/
+.vercel/
+
+# Secrets & env
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+
+# Infra
+*.tfstate
+*.tfstate.backup
+.terraform/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keys (never commit)
+/keys/
+/config/keys/
+infra/keys/
+infra/.env
