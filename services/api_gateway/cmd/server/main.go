@@ -56,6 +56,9 @@ func main() {
 		// Attested agent invocation
 		v1.POST("/agents/:id/invoke", gatewayH.InvokeAgent)
 
+		// OpenAI-compatible model catalog
+		v1.GET("/models", gatewayH.ListModels)
+
 		// Agent registry
 		v1.GET("/agents", gatewayH.ListAgents)
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -160,6 +161,25 @@ func (h *GatewayHandler) InvokeAgent(c *gin.Context) {
 	})
 }
 
+// GET /v1/models — proxy OpenRouter model catalog, keyed for this gateway.
+func (h *GatewayHandler) ListModels(c *gin.Context) {
+	req, err := http.NewRequestWithContext(c.Request.Context(), "GET",
+		fmt.Sprintf("%s/models", h.orchestratorURL), nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build request"})
+		return
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "orchestrator unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	c.Data(resp.StatusCode, "application/json", body)
+}
+
 // GET /v1/agents — list available agents, proxied to orchestrator.
 func (h *GatewayHandler) ListAgents(c *gin.Context) {
 	req, err := http.NewRequestWithContext(c.Request.Context(), "GET",
@@ -193,7 +213,15 @@ func (h *GatewayHandler) RateLimits(c *gin.Context) {
 
 // proxySSE proxies a streaming response as Server-Sent Events.
 func (h *GatewayHandler) proxySSE(c *gin.Context, req *http.Request) {
-	client := &http.Client{Timeout: 120 * time.Second}
+	// No overall timeout for SSE — the model controls when it finishes.
+	// Keep a transport-level dial timeout only.
+	client := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
+			ResponseHeaderTimeout: 30 * time.Second,
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream unavailable"})

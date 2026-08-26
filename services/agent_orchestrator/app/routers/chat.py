@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 router = APIRouter(tags=["chat"])
 
@@ -27,11 +28,30 @@ def _get_pool(request: Request) -> asyncpg.Pool:
 # ---------------------------------------------------------------------------
 
 class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     role: str
-    content: str
+    content: str | list[Any] | None = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def coerce_content(cls, v: Any) -> str | list[Any] | None:
+        # Some clients (e.g. pi) send content as a list of content blocks.
+        # Flatten to plain text for our executor.
+        if isinstance(v, list):
+            parts = []
+            for block in v:
+                if isinstance(block, dict):
+                    parts.append(block.get("text") or block.get("content") or "")
+                elif isinstance(block, str):
+                    parts.append(block)
+            return " ".join(p for p in parts if p)
+        return v
 
 
 class ChatCompletionsRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     model: str
     messages: list[ChatMessage]
     stream: bool = False
@@ -195,6 +215,41 @@ async def chat_completions(
             "reasoning":         meta.get("reasoning"),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# GET /models — proxy OpenRouter model catalog, prefixing IDs with openrouter/
+# ---------------------------------------------------------------------------
+
+@router.get("/models")
+async def list_models(request: Request) -> dict:
+    import os, httpx
+    key = os.getenv("OPENROUTER_API_KEY", "")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://openrouter.ai/api/v1/models",
+                headers={"Authorization": f"Bearer {key}"} if key else {},
+            )
+            resp.raise_for_status()
+            data = resp.json().get("data", [])
+    except Exception as e:
+        return {"object": "list", "data": [], "error": str(e)}
+
+    models = []
+    for m in data:
+        raw_id = m.get("id", "")
+        models.append({
+            "id": f"openrouter/{raw_id}",
+            "object": "model",
+            "owned_by": raw_id.split("/")[0] if "/" in raw_id else "openrouter",
+            "context_length": m.get("context_length"),
+            "pricing": m.get("pricing", {}),
+            "name": m.get("name", raw_id),
+            "description": m.get("description", ""),
+        })
+
+    return {"object": "list", "data": models}
 
 
 # ---------------------------------------------------------------------------
