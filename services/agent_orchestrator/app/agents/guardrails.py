@@ -106,7 +106,7 @@ class GuardrailEngine:
         targets = self._extract_targets(args)
 
         # scope_check (block): every target must be allow-listed and not deny-listed.
-        if (g := self._find("scope_check")):
+        if self._find("scope_check"):
             for t in targets:
                 if self._in_denylist(t):
                     decisions.append(GuardrailDecision(False, "block", "scope_check",
@@ -119,7 +119,7 @@ class GuardrailEngine:
                     break
 
         # no_active_scan (block): reject tools that imply active probing.
-        if (g := self._find("no_active_scan")) and not self.roe_scope.get("allow_active_scanning", False):
+        if self._find("no_active_scan") and not self.roe_scope.get("allow_active_scanning", False):
             low = fn_name.lower()
             if any(p in low for p in _ACTIVE_SCAN_PATTERNS):
                 decisions.append(GuardrailDecision(False, "block", "no_active_scan",
