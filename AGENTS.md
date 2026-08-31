@@ -8,26 +8,36 @@ Instructions for any AI coding agent working in this repository. Read this befor
 (installed as both `super-commit` and the shorthand `sc`). It creates standardized
 conventional commits.
 
+### Only commit and push what you changed
+
+**Only stage, commit, and push the specific files you actually modified in this
+session.** Never use `--all` / `-a` — it would sweep up unrelated pre-existing
+changes in the working tree. Always pass the exact files with `--files`.
+
 ### Commit changes
 
 Non-interactive (preferred for agents):
 
 ```bash
-sc commit --all --yes --type <type> --subject "<subject>"
+sc commit --files "<path1>,<path2>" --yes --type <type> --subject "<subject>"
 ```
 
-- `--all` / `-a` stages all changes without prompting
+- `--files` / `-f` — comma-separated file paths (or numbers) to stage. List only
+  the files you know you changed.
 - `--yes` / `-y` skips the confirmation prompt (required for non-interactive runs)
 - `--type` / `-t` is the conventional type: `feat`, `fix`, `docs`, `style`,
   `refactor`, `perf`, `test`, `chore`, `ci`, `revert`
 - `--subject` / `-m` is the commit subject line
-- Optional: `--scope`/`-s`, `--body`, `--footer`, `--breaking`, `--files`/`-f`
+- Optional: `--scope`/`-s`, `--body`, `--footer`, `--breaking`
 
 ### Commit and push in one step
 
 ```bash
-sc commit --all --yes --type <type> --subject "<subject>" --push
+sc commit --files "<path1>,<path2>" --yes --type <type> --subject "<subject>" --push
 ```
+
+`--push` pushes after committing. Since only your staged files are committed, only
+your changes get pushed.
 
 ### Push only (no commit)
 
