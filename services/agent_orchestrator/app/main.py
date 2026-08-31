@@ -36,11 +36,15 @@ async def lifespan(app: FastAPI):
     await pool.close()
 
 
-app = FastAPI(title="agent_orchestrator", version="0.1.0", lifespan=lifespan)
+# Version is injected at release time via the APP_VERSION build/env var; the
+# literal fallback keeps local/dev runs working when it is unset.
+VERSION = os.getenv("APP_VERSION", "0.1.0")
+
+app = FastAPI(title="agent_orchestrator", version=VERSION, lifespan=lifespan)
 app.include_router(sessions.router)
 app.include_router(chat.router)
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}

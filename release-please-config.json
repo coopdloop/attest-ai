@@ -19,7 +19,39 @@
   ],
   "packages": {
     ".": {
-      "package-name": "attest-ai"
+      "package-name": "attest-ai",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "frontend/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "toml",
+          "path": "services/agent_orchestrator/pyproject.toml",
+          "jsonpath": "$.project.version"
+        },
+        {
+          "type": "toml",
+          "path": "services/context_library/pyproject.toml",
+          "jsonpath": "$.project.version"
+        },
+        {
+          "type": "toml",
+          "path": "services/recon_agent_tools/pyproject.toml",
+          "jsonpath": "$.project.version"
+        },
+        {
+          "type": "toml",
+          "path": "services/threat_intel_agent_tools/pyproject.toml",
+          "jsonpath": "$.project.version"
+        },
+        {
+          "type": "toml",
+          "path": "services/redteam_agent_tools/pyproject.toml",
+          "jsonpath": "$.project.version"
+        }
+      ]
     }
   }
 }

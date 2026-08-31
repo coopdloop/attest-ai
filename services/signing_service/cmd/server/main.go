@@ -18,6 +18,9 @@ import (
 	pb "github.com/attest-ai/signing_service/proto/signingpb"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	if os.Getenv("LOG_LEVEL") == "debug" {
@@ -68,7 +71,7 @@ func main() {
 	pb.RegisterSigningServiceServer(grpcServer, &grpcHandler{svc: signerSvc})
 	reflection.Register(grpcServer) // enable grpcurl in dev
 
-	log.Info().Str("port", port).Msg("signing_service gRPC server starting")
+	log.Info().Str("port", port).Str("version", version).Msg("signing_service gRPC server starting")
 	if err := grpcServer.Serve(lis); err != nil {
 		log.Fatal().Err(err).Msg("gRPC server failed")
 	}

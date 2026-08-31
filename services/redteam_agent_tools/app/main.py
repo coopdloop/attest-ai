@@ -25,7 +25,9 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="redteam_agent_tools", version="0.1.0")
+VERSION = os.getenv("APP_VERSION", "0.1.0")
+
+app = FastAPI(title="redteam_agent_tools", version=VERSION)
 
 PAYLOAD_LIBRARY_PATH = os.getenv("PAYLOAD_LIBRARY_PATH", "/config/payloads")
 DEFAULT_TARGET_TIMEOUT_MS = int(os.getenv("DEFAULT_TARGET_TIMEOUT_MS", "15000"))
@@ -49,7 +51,7 @@ class TestResult(str, Enum):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 # ── Payload library ───────────────────────────────────────────────────────────

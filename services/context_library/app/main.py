@@ -16,13 +16,15 @@ async def lifespan(app: FastAPI):
     await close_pool()
 
 
-app = FastAPI(title="context_library", version="0.1.0", lifespan=lifespan)
+VERSION = os.getenv("APP_VERSION", "0.1.0")
+
+app = FastAPI(title="context_library", version=VERSION, lifespan=lifespan)
 app.include_router(harnesses.router)
 
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 async def _seed_built_in_harnesses() -> None:

@@ -4,6 +4,13 @@
 
 x-common-env: &common-env
   LOG_LEVEL: info
+  # Python services read their version from this at runtime; release CI sets
+  # VERSION, unset falls back to dev.
+  APP_VERSION: ${VERSION:-dev}
+
+# App version stamped into images/health. Release CI sets VERSION; unset = dev.
+x-version-args: &version-args
+  VERSION: ${VERSION:-dev}
 
 x-depends-infra: &depends-infra
   depends_on:
@@ -83,6 +90,7 @@ services:
     build:
       context: ../services/signing_service
       dockerfile: Dockerfile
+      args: *version-args
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -102,6 +110,7 @@ services:
     build:
       context: ../services/auth_service
       dockerfile: Dockerfile
+      args: *version-args
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -121,6 +130,7 @@ services:
     build:
       context: ../services
       dockerfile: attestation_service/Dockerfile
+      args: *version-args
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -143,6 +153,7 @@ services:
     build:
       context: ../services/trace_query_service
       dockerfile: Dockerfile
+      args: *version-args
     restart: unless-stopped
     environment:
       <<: *common-env
@@ -164,6 +175,7 @@ services:
     build:
       context: ../services/api_gateway
       dockerfile: Dockerfile
+      args: *version-args
     restart: unless-stopped
     environment:
       <<: *common-env

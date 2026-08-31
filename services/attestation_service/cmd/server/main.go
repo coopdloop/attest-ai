@@ -16,6 +16,9 @@ import (
 	"github.com/attest-ai/attestation_service/internal/store"
 )
 
+// version is stamped at build time via -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339})
@@ -67,7 +70,7 @@ func main() {
 	r.Use(requestLogger())
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "version": version})
 	})
 
 	r.POST("/sessions/:session_id/events", h.AppendEvent)

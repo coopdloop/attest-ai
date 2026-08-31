@@ -3,7 +3,8 @@ WORKDIR /app
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /trace_query_service ./cmd/server
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${VERSION}" -o /trace_query_service ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates

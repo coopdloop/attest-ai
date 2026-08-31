@@ -25,7 +25,9 @@ import vt
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="threat_intel_agent_tools", version="0.1.0")
+VERSION = os.getenv("APP_VERSION", "0.1.0")
+
+app = FastAPI(title="threat_intel_agent_tools", version=VERSION)
 
 VT_API_KEY = os.getenv("VT_API_KEY", "")
 OTX_API_KEY = os.getenv("OTX_API_KEY", "")
@@ -51,7 +53,7 @@ async def shutdown() -> None:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 @app.get("/ioc-submission-log")

@@ -23,7 +23,9 @@ import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="recon_agent_tools", version="0.1.0")
+VERSION = os.getenv("APP_VERSION", "0.1.0")
+
+app = FastAPI(title="recon_agent_tools", version=VERSION)
 
 SHODAN_API_KEY = os.getenv("SHODAN_API_KEY", "")
 SCOPE_CONFIG_PATH = os.getenv("SCOPE_CONFIG_PATH", "/config/scope.yaml")
@@ -75,7 +77,7 @@ async def startup() -> None:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "version": VERSION}
 
 
 # ── MCP tool endpoints ────────────────────────────────────────────────────────

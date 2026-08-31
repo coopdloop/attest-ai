@@ -6,7 +6,8 @@ COPY attestation_service/go.mod attestation_service/go.sum* attestation_service/
 WORKDIR /app/attestation_service
 RUN go mod download
 COPY attestation_service/ .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /attestation_service ./cmd/server
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=${VERSION}" -o /attestation_service ./cmd/server
 
 FROM alpine:3.20
 RUN apk add --no-cache ca-certificates
