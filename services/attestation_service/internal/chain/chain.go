@@ -55,7 +55,7 @@ type AttestationBundle struct {
 	ModelID       string    `json:"model_id,omitempty"`
 	PolicyVersion string    `json:"policy_version,omitempty"`
 	Signature     string    `json:"signature"`
-	SigningKeyID   string    `json:"signing_key_id"`
+	SigningKeyID  string    `json:"signing_key_id"`
 	RekorLogID    string    `json:"rekor_log_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 }

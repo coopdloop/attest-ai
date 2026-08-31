@@ -9,6 +9,7 @@ export interface MessageMeta {
   attestation_ids: string[]
   reasoning: string | null
   usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+  attestation_bundle?: AttestationBundle
 }
 
 export interface Message {
@@ -48,6 +49,7 @@ export type TraceEventType =
   | 'retry'
   | 'completion'
   | 'error'
+  | 'policy_violation'
 
 export interface AttestationBundle {
   session_id: string

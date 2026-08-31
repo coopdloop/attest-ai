@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -15,17 +17,30 @@ import (
 )
 
 type GatewayHandler struct {
-	orchestratorURL    string
-	attestationURL     string
-	limiter            *ratelimit.Limiter
+	orchestratorURL string
+	attestationURL  string
+	limiter         *ratelimit.Limiter
+	chatLimit       int
+	invokeLimit     int
 }
 
 func New(orchestratorURL, attestationURL string, limiter *ratelimit.Limiter) *GatewayHandler {
 	return &GatewayHandler{
-		orchestratorURL:    orchestratorURL,
-		attestationURL:     attestationURL,
-		limiter:            limiter,
+		orchestratorURL: orchestratorURL,
+		attestationURL:  attestationURL,
+		limiter:         limiter,
+		chatLimit:       envInt("RATE_LIMIT_CHAT_PER_MIN", 100),
+		invokeLimit:     envInt("RATE_LIMIT_INVOKE_PER_MIN", 50),
 	}
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
 }
 
 // POST /v1/chat/completions — OpenAI-compatible endpoint, proxied to orchestrator.
@@ -34,7 +49,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 
 	// Rate limit check
 	if h.limiter != nil {
-		remaining, resetAt, allowed := h.limiter.Check(c.Request.Context(), fmt.Sprintf("org:%v", orgID), 100)
+		remaining, resetAt, allowed := h.limiter.Check(c.Request.Context(), fmt.Sprintf("org:%v", orgID), h.chatLimit)
 		c.Header("X-RateLimit-Remaining", fmt.Sprintf("%d", remaining))
 		c.Header("X-RateLimit-Reset", fmt.Sprintf("%d", resetAt.Unix()))
 		if !allowed {
@@ -59,9 +74,11 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build orchestrator request"})
 		return
 	}
+	tokenType, _ := c.Get("token_type")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Org-Id", fmt.Sprintf("%v", orgID))
 	req.Header.Set("X-User-Id", fmt.Sprintf("%v", userID))
+	req.Header.Set("X-Caller-Type", fmt.Sprintf("%v", tokenType))
 
 	if stream {
 		h.proxySSE(c, req)
@@ -87,7 +104,7 @@ func (h *GatewayHandler) InvokeAgent(c *gin.Context) {
 
 	// Rate limit check
 	if h.limiter != nil {
-		_, _, allowed := h.limiter.Check(c.Request.Context(), fmt.Sprintf("org:%v", orgID), 50)
+		_, _, allowed := h.limiter.Check(c.Request.Context(), fmt.Sprintf("org:%v", orgID), h.invokeLimit)
 		if !allowed {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
 			return
@@ -95,9 +112,9 @@ func (h *GatewayHandler) InvokeAgent(c *gin.Context) {
 	}
 
 	var reqBody struct {
-		Input           string                 `json:"input" binding:"required"`
+		Input            string                 `json:"input" binding:"required"`
 		ContextOverrides map[string]interface{} `json:"context_overrides"`
-		Stream          bool                   `json:"stream"`
+		Stream           bool                   `json:"stream"`
 	}
 	if err := c.ShouldBindJSON(&reqBody); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -203,7 +220,7 @@ func (h *GatewayHandler) ListAgents(c *gin.Context) {
 func (h *GatewayHandler) RateLimits(c *gin.Context) {
 	orgID, _ := c.Get("org_id")
 	limit, remaining, resetAt := h.limiter.Status(
-		c.Request.Context(), fmt.Sprintf("org:%v", orgID), 100)
+		c.Request.Context(), fmt.Sprintf("org:%v", orgID), h.chatLimit)
 	c.JSON(http.StatusOK, gin.H{
 		"limit":     limit,
 		"remaining": remaining,

@@ -18,9 +18,9 @@ import (
 )
 
 type AttestationHandler struct {
-	db          *pgxpool.Pool
-	objStore    *store.ObjectStore
-	signClient  *signclient.Client
+	db           *pgxpool.Pool
+	objStore     *store.ObjectStore
+	signClient   *signclient.Client
 	rekorEnabled bool
 }
 
@@ -131,7 +131,7 @@ func (h *AttestationHandler) FinalizeSession(c *gin.Context) {
 		ModelID:       req.ModelID,
 		PolicyVersion: req.PolicyVersion,
 		Signature:     fmt.Sprintf("%x", sig),
-		SigningKeyID:   keyID,
+		SigningKeyID:  keyID,
 		CreatedAt:     time.Now().UTC(),
 	}
 

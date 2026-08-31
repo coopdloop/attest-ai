@@ -8,7 +8,7 @@ GET  /agents            — lists agent_configs for the org
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
@@ -21,6 +21,41 @@ router = APIRouter(tags=["chat"])
 
 def _get_pool(request: Request) -> asyncpg.Pool:
     return request.app.state.db_pool
+
+
+async def _persist_completion(
+    pool: asyncpg.Pool,
+    turn_id: str,
+    session_id: str,
+    response_text: str,
+    meta: dict,
+    usage: dict,
+    model: str,
+) -> None:
+    """Persist per-turn economics + roll them up onto the session so the
+    analytics dashboard can aggregate spend/latency/tokens without recompute."""
+    cost = meta.get("cost_usd")
+    latency = int(meta.get("latency_ms") or 0)
+    total_tokens = int(usage.get("total_tokens") or 0)
+    in_tok = int(usage.get("prompt_tokens") or 0)
+    out_tok = int(usage.get("completion_tokens") or 0)
+
+    await pool.execute(
+        """UPDATE turns SET agent_response=$1, status='completed', completed_at=now(),
+                  cost_usd=$2, latency_ms=$3, model_id=$4,
+                  input_tokens=$5, output_tokens=$6
+           WHERE id=$7""",
+        response_text, cost, latency, model, in_tok, out_tok, uuid.UUID(turn_id),
+    )
+    await pool.execute(
+        """UPDATE sessions SET status='completed', completed_at=now(),
+                  model_id=$1,
+                  total_cost_usd = total_cost_usd + $2,
+                  total_tokens   = total_tokens + $3,
+                  total_latency_ms = total_latency_ms + $4
+           WHERE id=$5""",
+        model, cost or 0.0, total_tokens, latency, uuid.UUID(session_id),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +118,15 @@ async def chat_completions(
     if not org_id:
         raise HTTPException(status_code=400, detail="missing org context")
     session_id = str(uuid.uuid4())
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
+
+    # Caller type: API-key traffic is machine-driven, browser sessions are human.
+    mode = "machine" if (request.headers.get("X-Caller-Type") == "api_key") else "human"
 
     # Create session
     await pool.execute(
-        "INSERT INTO sessions (id, org_id, agent_id, mode, status, started_at) VALUES ($1,$2,$3,'human','active',$4)",
-        uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), now,
+        "INSERT INTO sessions (id, org_id, agent_id, mode, status, started_at) VALUES ($1,$2,$3,$4,'active',$5)",
+        uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), mode, now,
     )
 
     # Build turn index
@@ -149,13 +187,9 @@ async def chat_completions(
 
             # Post-stream DB update (runs when generator is exhausted)
             try:
-                await pool.execute(
-                    "UPDATE turns SET agent_response=$1, status='completed', completed_at=now() WHERE id=$2",
-                    full_text, uuid.UUID(turn_id),
-                )
-                await pool.execute(
-                    "UPDATE sessions SET status='completed', completed_at=now() WHERE id=$1",
-                    uuid.UUID(session_id),
+                usage = final_meta.get("usage", {}) or {}
+                await _persist_completion(
+                    pool, turn_id, session_id, full_text, final_meta, usage, model,
                 )
             except Exception:
                 pass
@@ -175,16 +209,12 @@ async def chat_completions(
         messages=messages,
     )
 
-    await pool.execute(
-        "UPDATE turns SET agent_response=$1, status='completed', completed_at=now() WHERE id=$2",
-        response_text, uuid.UUID(turn_id),
-    )
-    await pool.execute(
-        "UPDATE sessions SET status='completed', completed_at=now() WHERE id=$1",
-        uuid.UUID(session_id),
-    )
-
     usage = meta.get("usage", {})
+    try:
+        await _persist_completion(pool, turn_id, session_id, response_text, meta, usage, model)
+    except Exception:
+        pass
+
     return {
         "id": f"chatcmpl-{session_id}",
         "object": "chat.completion",

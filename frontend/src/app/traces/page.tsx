@@ -9,6 +9,7 @@ export default function TracesPage() {
   const [sessions, setSessions]               = useState<Session[]>([])
   const [selectedSession, setSelectedSession] = useState<string | null>(null)
   const [traceEvents, setTraceEvents]         = useState<TraceEvent[]>([])
+  const [integrityValid, setIntegrityValid]   = useState<boolean>(true)
   const [bundle, setBundle]                   = useState<AttestationBundle | null>(null)
   const [sessionsLoading, setSessionsLoading] = useState(true)
   const [sessionsError, setSessionsError]     = useState<string | null>(null)
@@ -27,6 +28,7 @@ export default function TracesPage() {
   async function loadTrace(sessionId: string) {
     setSelectedSession(sessionId)
     setTraceEvents([])
+    setIntegrityValid(true)
     setBundle(null)
 
     const [traceResp, bundleResp] = await Promise.allSettled([
@@ -37,6 +39,7 @@ export default function TracesPage() {
     if (traceResp.status === 'fulfilled' && traceResp.value.ok) {
       const data = await traceResp.value.json()
       setTraceEvents(data.entries ?? [])
+      setIntegrityValid(data.integrity?.valid ?? true)
     }
 
     if (bundleResp.status === 'fulfilled' && bundleResp.value.ok) {
@@ -48,13 +51,17 @@ export default function TracesPage() {
     return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })
   }
 
+  const selected = sessions.find(s => s.session_id === selectedSession) ?? null
+
   return (
-    <div className="min-h-screen bg-gray-950 text-gray-100 flex">
+    <div className="h-screen overflow-hidden bg-gray-950 text-gray-100 flex">
       {/* Session list sidebar */}
-      <div className="w-72 border-r border-gray-800 overflow-y-auto shrink-0">
-        <div className="p-4 border-b border-gray-800">
+      <div className="w-72 border-r border-gray-800 overflow-y-auto shrink-0 flex flex-col">
+        <div className="p-4 border-b border-gray-800 shrink-0">
           <h1 className="text-sm font-semibold">Session Browser</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Agent session history</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {sessions.length > 0 ? `${sessions.length} session${sessions.length === 1 ? '' : 's'}` : 'Agent session history'}
+          </p>
         </div>
 
         {sessionsLoading && (
@@ -97,17 +104,78 @@ export default function TracesPage() {
           </div>
         ) : (
           <div className="max-w-3xl mx-auto space-y-6">
+            {/* Session detail header */}
+            <div className="bg-gray-950 border border-gray-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-300">Session Detail</h2>
+                <div className="flex items-center gap-3">
+                  <a
+                    href={`/chat?session=${selectedSession}`}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    ↩ chat
+                  </a>
+                  <a
+                    href={`/traces/${selectedSession}`}
+                    className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                  >
+                    full page ↗
+                  </a>
+                  {selected && (
+                    <span className={`text-xs px-2 py-0.5 rounded-full ${
+                      selected.status === 'completed' ? 'bg-green-900/40 text-green-400' :
+                      selected.status === 'failed'    ? 'bg-red-900/40 text-red-400' :
+                      'bg-gray-800 text-gray-400'
+                    }`}>{selected.status}</span>
+                  )}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
+                <Detail label="Session ID" value={selectedSession} mono />
+                <Detail label="Mode" value={selected?.mode ?? '—'} />
+                <Detail label="Started" value={selected?.started_at ? formatDate(selected.started_at) : '—'} />
+                <Detail label="Completed" value={selected?.completed_at ? formatDate(selected.completed_at) : '—'} />
+                <Detail label="Events" value={String(traceEvents.length)} />
+                <Detail
+                  label="Chain integrity"
+                  value={integrityValid ? '✓ intact' : '⚠ tampered'}
+                  className={integrityValid ? 'text-emerald-400' : 'text-red-400'}
+                />
+                <Detail label="Attestation" value={bundle ? '✓ signed bundle' : (selected?.attestation_id ? 'pending fetch' : 'not finalized')} className={bundle ? 'text-emerald-400' : 'text-gray-500'} />
+                <Detail label="Agent" value={selected?.agent_id ?? '—'} mono />
+              </div>
+            </div>
+
             <TraceTimeline
               sessionId={selectedSession}
               events={traceEvents}
-              integrityValid={true}
+              integrityValid={integrityValid}
             />
-            {bundle && (
+            {bundle ? (
               <BundleViewer bundle={bundle} sessionId={selectedSession} />
+            ) : (
+              <div className="bg-gray-950 border border-gray-800 rounded-xl p-4 text-xs text-gray-500">
+                No signed attestation bundle for this session. Bundles are created when a
+                session is finalized — older sessions created before finalization was wired up
+                will not have one.
+              </div>
             )}
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function Detail({ label, value, mono, className }: {
+  label: string; value: string; mono?: boolean; className?: string
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-gray-600 uppercase tracking-wide text-[10px]">{label}</span>
+      <span className={`break-all ${mono ? 'font-mono text-gray-400' : 'text-gray-300'} ${className ?? ''}`}>
+        {value}
+      </span>
     </div>
   )
 }

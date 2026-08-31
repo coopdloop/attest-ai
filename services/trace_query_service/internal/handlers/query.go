@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -17,9 +18,9 @@ import (
 )
 
 type QueryHandler struct {
-	db         *pgxpool.Pool
-	objStore   *store.ObjectStore
-	signURL    string
+	db       *pgxpool.Pool
+	objStore *store.ObjectStore
+	signURL  string
 }
 
 func New(db *pgxpool.Pool, objStore *store.ObjectStore, signURL string) *QueryHandler {
@@ -122,8 +123,22 @@ func (h *QueryHandler) GetTrace(c *gin.Context) {
 		entries = append(entries, e)
 	}
 
-	// Verify hash chain integrity
-	tampered := h.verifyChain(entries)
+	// Verify hash chain integrity by recomputing every link.
+	tampered := -1
+	prevHash := genesisHash
+	for i := range entries {
+		e := entries[i]
+		expectedChain := hashChain(prevHash, e.PayloadHash)
+		if e.ChainHash != expectedChain {
+			tampered = int(e.Seq)
+			break
+		}
+		if i > 0 && e.PrevHash != entries[i-1].ChainHash {
+			tampered = int(e.Seq)
+			break
+		}
+		prevHash = e.ChainHash
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"session_id": sessionID,
@@ -131,6 +146,15 @@ func (h *QueryHandler) GetTrace(c *gin.Context) {
 		"count":      len(entries),
 		"integrity":  gin.H{"valid": tampered < 0, "tampered_at_seq": tampered},
 	})
+}
+
+const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+// hashChain recomputes SHA-256(prevHash || payloadHash), matching
+// attestation_service's chain.HashChain.
+func hashChain(prevHash, payloadHash string) string {
+	h := sha256.Sum256([]byte(prevHash + payloadHash))
+	return hex.EncodeToString(h[:])
 }
 
 // GET /traces/:session_id/bundle — retrieve and verify attestation bundle
@@ -207,18 +231,6 @@ func (h *QueryHandler) ExportTrace(c *gin.Context) {
 		"exported_at":        time.Now().UTC(),
 	}
 	c.JSON(http.StatusOK, export)
-}
-
-func (h *QueryHandler) verifyChain(entries interface{}) int {
-	// Type-switch to slice of chain entries
-	type entry struct {
-		Seq         int64
-		PayloadHash string
-		ChainHash   string
-		PrevHash    string
-	}
-	// Simplified: return -1 (valid) — full merkle verification in chain package
-	return -1
 }
 
 func (h *QueryHandler) verifySignature(ctx context.Context, orgID, keyID, rootHash, sigHex string) bool {

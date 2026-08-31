@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI):
         context_library_url=context_library_url,
         mcp_client=mcp_client,
         litellm_config_path=litellm_config,
+        db_pool=pool,
     )
     app.state.executor = executor
 

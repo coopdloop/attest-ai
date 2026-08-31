@@ -15,11 +15,11 @@ import (
 
 // KeyPair holds an Ed25519 keypair with metadata.
 type KeyPair struct {
-	ID         string    `json:"id"`
-	OrgID      string    `json:"org_id"`
-	PublicKey  []byte    `json:"public_key"`
-	PrivateKey []byte    `json:"private_key"` // stored encrypted at rest
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string     `json:"id"`
+	OrgID      string     `json:"org_id"`
+	PublicKey  []byte     `json:"public_key"`
+	PrivateKey []byte     `json:"private_key"` // stored encrypted at rest
+	CreatedAt  time.Time  `json:"created_at"`
 	RetiredAt  *time.Time `json:"retired_at,omitempty"`
 }
 

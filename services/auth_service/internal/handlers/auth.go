@@ -205,10 +205,11 @@ func (h *AuthHandler) IntrospectToken(c *gin.Context) {
 	// Try JWT first
 	if claims, err := h.jwtService.ValidateToken(req.Token); err == nil {
 		c.JSON(http.StatusOK, gin.H{
-			"active":  true,
-			"user_id": claims.UserID,
-			"org_id":  claims.OrgID,
-			"roles":   claims.Roles,
+			"active":     true,
+			"user_id":    claims.UserID,
+			"org_id":     claims.OrgID,
+			"roles":      claims.Roles,
+			"token_type": "jwt",
 		})
 		return
 	}
@@ -218,10 +219,11 @@ func (h *AuthHandler) IntrospectToken(c *gin.Context) {
 		orgID, keyID, err := h.validateAPIKey(c.Request.Context(), req.Token)
 		if err == nil {
 			c.JSON(http.StatusOK, gin.H{
-				"active":  true,
-				"user_id": keyID,  // key ID stands in as the caller identity
-				"org_id":  orgID,
-				"roles":   []string{"member"},
+				"active":     true,
+				"user_id":    keyID, // key ID stands in as the caller identity
+				"org_id":     orgID,
+				"roles":      []string{"member"},
+				"token_type": "api_key",
 			})
 			return
 		}

@@ -1,0 +1,19 @@
+# Lenient baseline so CI enforces real problems without churning existing style.
+target-version = "py312"
+line-length = 120
+
+[lint]
+# E/F = pyflakes + core pycodestyle errors; keep the set focused and actionable.
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",  # line length handled by formatter, not a hard failure
+    "E402",  # module-level import not at top (used intentionally in a few mains)
+    "E722",  # bare except — used deliberately for non-blocking audit/telemetry paths
+    "F401",  # unused imports in __init__ / optional paths
+]
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+
+[format]
+quote-style = "double"

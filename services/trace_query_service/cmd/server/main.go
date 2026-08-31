@@ -61,6 +61,22 @@ func main() {
 	r.GET("/traces/:session_id/bundle", h.GetBundle)
 	r.GET("/traces/:session_id/export", h.ExportTrace)
 
+	// Command Center — usage / cost / model analytics.
+	r.GET("/analytics/overview", h.AnalyticsOverview)
+	r.GET("/analytics/timeseries", h.AnalyticsTimeseries)
+	r.GET("/analytics/by-model", h.AnalyticsByModel)
+	r.GET("/analytics/recent", h.AnalyticsRecent)
+
+	// Trust Center — org-wide attestation verification + public receipts.
+	r.GET("/attestation/trust-score", h.TrustScore)
+	r.GET("/attestation/verify-batch", h.VerifyBatch)
+	r.GET("/attestation/audit-log", h.AuditLog)
+	r.GET("/verify/:session_id", h.PublicVerify)
+
+	// Governance Console — key spend, budgets, guardrail alerts.
+	r.GET("/governance/keys", h.GovernanceKeys)
+	r.GET("/governance/alerts", h.GovernanceAlerts)
+
 	log.Info().Str("port", port).Msg("trace_query_service starting")
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal().Err(err).Msg("server failed")

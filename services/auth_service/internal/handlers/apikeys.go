@@ -25,7 +25,8 @@ func NewAPIKeyHandler(database *db.DB) *APIKeyHandler {
 func (h *APIKeyHandler) List(c *gin.Context) {
 	orgID := c.Param("org_id")
 	rows, err := h.db.Pool.Query(c.Request.Context(),
-		`SELECT id, name, key_prefix, scopes, last_used_at, created_at
+		`SELECT id, name, key_prefix, scopes, last_used_at, created_at,
+		        budget_usd, monthly_quota, expires_at
 		 FROM api_keys WHERE org_id = $1 AND revoked_at IS NULL ORDER BY created_at DESC`, orgID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "query failed"})
@@ -37,13 +38,16 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 	for rows.Next() {
 		var id, name, prefix string
 		var scopes []string
-		var lastUsed, createdAt interface{}
-		if err := rows.Scan(&id, &name, &prefix, &scopes, &lastUsed, &createdAt); err != nil {
+		var lastUsed, createdAt, expiresAt interface{}
+		var budget *float64
+		var quota *int
+		if err := rows.Scan(&id, &name, &prefix, &scopes, &lastUsed, &createdAt, &budget, &quota, &expiresAt); err != nil {
 			continue
 		}
 		keys = append(keys, map[string]interface{}{
 			"id": id, "name": name, "key_prefix": prefix,
 			"scopes": scopes, "last_used_at": lastUsed, "created_at": createdAt,
+			"budget_usd": budget, "monthly_quota": quota, "expires_at": expiresAt,
 		})
 	}
 	c.JSON(http.StatusOK, keys)
@@ -53,8 +57,10 @@ func (h *APIKeyHandler) List(c *gin.Context) {
 func (h *APIKeyHandler) Create(c *gin.Context) {
 	orgID := c.Param("org_id")
 	var req struct {
-		Name   string   `json:"name" binding:"required"`
-		Scopes []string `json:"scopes"`
+		Name         string   `json:"name" binding:"required"`
+		Scopes       []string `json:"scopes"`
+		BudgetUSD    *float64 `json:"budget_usd"`
+		MonthlyQuota *int     `json:"monthly_quota"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -78,9 +84,9 @@ func (h *APIKeyHandler) Create(c *gin.Context) {
 
 	id := uuid.New().String()
 	_, err = h.db.Pool.Exec(c.Request.Context(),
-		`INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, scopes)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, orgID, req.Name, string(hash), prefix, req.Scopes)
+		`INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, scopes, budget_usd, monthly_quota)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, orgID, req.Name, string(hash), prefix, req.Scopes, req.BudgetUSD, req.MonthlyQuota)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to create key"})
 		return

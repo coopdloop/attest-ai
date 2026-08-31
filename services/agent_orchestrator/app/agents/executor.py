@@ -23,6 +23,7 @@ import litellm
 
 from app.mcp.client import MCPClient
 from app.models.session import TraceEvent
+from app.agents.guardrails import GuardrailEngine, GuardrailDecision
 
 
 class AgentExecutor:
@@ -32,10 +33,12 @@ class AgentExecutor:
         context_library_url: str,
         mcp_client: MCPClient,
         litellm_config_path: str,
+        db_pool: Any = None,
     ) -> None:
         self._attestation_url = attestation_url
         self._context_library_url = context_library_url
         self._mcp = mcp_client
+        self._db_pool = db_pool
         litellm.drop_params = True
         self._openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         self._router = None  # Reserved for future Router use
@@ -62,6 +65,8 @@ class AgentExecutor:
         harness = await self._fetch_harness(org_id, harness_slug)
         system_context = harness.get("definition", {}).get("system_context", "")
         tool_bindings = harness.get("definition", {}).get("tool_bindings", [])
+        policy_version = str(harness.get("version", "") or harness.get("definition", {}).get("policy_version", ""))
+        guardrails = GuardrailEngine.from_harness(harness)
 
         tools = self._build_tool_definitions(tool_bindings)
         full_messages = [{"role": "system", "content": system_context}] + list(messages) if system_context else list(messages)
@@ -128,6 +133,9 @@ class AgentExecutor:
                     "cost_usd": meta["cost_usd"],
                     "latency_ms": llm_ms,
                 }, attestation_ids)
+                bundle = await self._finalize_session(session_id, org_id, model, policy_version)
+                if bundle:
+                    meta["attestation_bundle"] = bundle
                 return final_text, attestation_ids, meta
 
             # Process tool calls
@@ -139,6 +147,22 @@ class AgentExecutor:
 
                 # Resolve which MCP server owns this tool
                 server, tool = self._resolve_tool(fn_name, tool_bindings)
+
+                # Guardrail enforcement — block, warn, throttle before the call.
+                blocked = await self._enforce_guardrails(
+                    guardrails, session_id, org_id, fn_name, fn_args, attestation_ids,
+                )
+                if blocked is not None:
+                    denied = {"error": "blocked_by_guardrail",
+                              "guardrail_id": blocked.guardrail_id,
+                              "detail": blocked.detail}
+                    full_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": fn_name,
+                        "content": json.dumps(denied),
+                    })
+                    continue
 
                 # Emit tool_call trace event
                 await self._emit_trace(session_id, org_id, "tool_call", {
@@ -194,6 +218,8 @@ class AgentExecutor:
         harness = await self._fetch_harness(org_id, harness_slug)
         system_context = harness.get("definition", {}).get("system_context", "")
         tool_bindings  = harness.get("definition", {}).get("tool_bindings", [])
+        policy_version = str(harness.get("version", "") or harness.get("definition", {}).get("policy_version", ""))
+        guardrails = GuardrailEngine.from_harness(harness)
         tools = self._build_tool_definitions(tool_bindings)
         full_messages = (
             [{"role": "system", "content": system_context}] + list(messages)
@@ -328,6 +354,21 @@ class AgentExecutor:
                     fn_args = json.loads(tool_call.function.arguments or "{}")
                     server, tool = self._resolve_tool(fn_name, tool_bindings)
 
+                    blocked = await self._enforce_guardrails(
+                        guardrails, session_id, org_id, fn_name, fn_args, attestation_ids,
+                    )
+                    if blocked is not None:
+                        denied = {"error": "blocked_by_guardrail",
+                                  "guardrail_id": blocked.guardrail_id,
+                                  "detail": blocked.detail}
+                        full_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": fn_name,
+                            "content": json.dumps(denied),
+                        })
+                        continue
+
                     await self._emit_trace(session_id, org_id, "tool_call",
                                            {"tool": fn_name, "server": server, "args": fn_args}, attestation_ids)
                     tool_result = await self._mcp.call_tool(server, tool, fn_args)
@@ -347,6 +388,11 @@ class AgentExecutor:
                 "choices": [{"index": 0, "delta": {"content": f"\n\n[Stream error: {e}]"}, "finish_reason": "stop"}],
             }
             yield f"data: {json.dumps(err_chunk)}\n\n"
+
+        # Seal the session: sign the hash-chain root into an attestation bundle.
+        bundle = await self._finalize_session(session_id, org_id, model, policy_version)
+        if bundle:
+            meta["attestation_bundle"] = bundle
 
         meta["latency_ms"]      = round((_time.monotonic() - run_start) * 1000)
         meta["attestation_ids"] = attestation_ids
@@ -417,6 +463,65 @@ class AgentExecutor:
                 return binding["server"], fn_name
         return "unknown", fn_name
 
+    async def _enforce_guardrails(
+        self,
+        engine: "GuardrailEngine",
+        session_id: str,
+        org_id: str,
+        fn_name: str,
+        fn_args: dict[str, Any],
+        attestation_ids: list[str],
+        context_overrides: dict[str, Any] | None = None,
+    ) -> "GuardrailDecision | None":
+        """Evaluate guardrails for a tool call. Records every trip to the DB +
+        hash chain. Returns the first blocking decision, or None if allowed.
+        Also applies throttle guardrails before returning."""
+        if not engine.active:
+            return None
+
+        decisions = engine.evaluate_tool_call(fn_name, fn_args, context_overrides)
+        blocking: GuardrailDecision | None = None
+        for d in decisions:
+            await self._record_guardrail(session_id, org_id, d, fn_name, attestation_ids)
+            if not d.allowed and blocking is None:
+                blocking = d
+
+        if blocking is None:
+            # Only throttle calls we're actually going to make.
+            await engine.throttle()
+        return blocking
+
+    async def _record_guardrail(
+        self,
+        session_id: str,
+        org_id: str,
+        decision: "GuardrailDecision",
+        fn_name: str,
+        attestation_ids: list[str],
+    ) -> None:
+        """Persist a guardrail trip to guardrail_events (for the Governance
+        Console) and to the signed hash chain (for tamper-evident audit)."""
+        detail = f"{fn_name}: {decision.detail}" if decision.detail else fn_name
+        if self._db_pool is not None:
+            try:
+                await self._db_pool.execute(
+                    """INSERT INTO guardrail_events
+                           (org_id, session_id, guardrail_id, action, detail)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    uuid.UUID(org_id), uuid.UUID(session_id),
+                    decision.guardrail_id, decision.action, detail,
+                )
+            except Exception:
+                pass  # Non-blocking: audit failure must not halt the agent.
+        # Also seal the violation into the attestation chain.
+        await self._emit_trace(session_id, org_id, "policy_violation", {
+            "guardrail_id": decision.guardrail_id,
+            "action": decision.action,
+            "allowed": decision.allowed,
+            "tool": fn_name,
+            "detail": decision.detail,
+        }, attestation_ids)
+
     async def _emit_trace(
         self,
         session_id: str,
@@ -442,3 +547,29 @@ class AgentExecutor:
                     attestation_ids.append(resp.json().get("entry_id", ""))
         except Exception:
             pass  # Attestation failure is non-blocking; agent continues
+
+    async def _finalize_session(
+        self,
+        session_id: str,
+        org_id: str,
+        model: str,
+        policy_version: str = "",
+    ) -> dict | None:
+        """Seal the session: POST to attestation_service/finalize to sign the
+        hash-chain root into an Ed25519 attestation bundle. Returns the bundle
+        or None if finalization failed (non-blocking)."""
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{self._attestation_url}/sessions/{session_id}/finalize",
+                    json={
+                        "org_id": org_id,
+                        "model_id": model,
+                        "policy_version": policy_version,
+                    },
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception:
+            pass
+        return None

@@ -17,6 +17,7 @@ const EVENT_COLORS: Record<TraceEventType, string> = {
   retry: 'bg-orange-500',
   completion: 'bg-emerald-500',
   error: 'bg-red-500',
+  policy_violation: 'bg-rose-600',
 }
 
 const EVENT_ICONS: Record<TraceEventType, string> = {
@@ -27,6 +28,7 @@ const EVENT_ICONS: Record<TraceEventType, string> = {
   retry: '↩️',
   completion: '✅',
   error: '❌',
+  policy_violation: '🛡️',
 }
 
 export function TraceTimeline({ sessionId, events, integrityValid, tamperedAtSeq }: TraceTimelineProps) {

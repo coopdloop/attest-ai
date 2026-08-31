@@ -1,6 +1,7 @@
 'use client'
 
 import type { AttestationBundle } from '@/types'
+import { TRACE_QUERY_URL } from '@/lib/api'
 
 interface BundleViewerProps {
   bundle: AttestationBundle
@@ -36,7 +37,7 @@ export function BundleViewer({ bundle, sessionId }: BundleViewerProps) {
       {/* Export button */}
       <div className="px-4 py-3 border-t border-gray-800">
         <a
-          href={`${process.env.NEXT_PUBLIC_TRACE_QUERY_URL ?? 'http://localhost:8084'}/traces/${sessionId}/export`}
+          href={`${TRACE_QUERY_URL}/traces/${sessionId}/export`}
           download={`attest-ai-bundle-${sessionId}.json`}
           className="inline-flex items-center gap-1.5 text-xs font-medium
                      bg-gray-800 hover:bg-gray-700 text-gray-200

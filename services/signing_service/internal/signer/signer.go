@@ -12,7 +12,7 @@ import (
 
 // Service handles signing operations using the key store.
 type Service struct {
-	store  keystore.Store
+	store   keystore.Store
 	auditDB *db.AuditDB
 }
 
@@ -43,6 +43,13 @@ func (s *Service) Sign(ctx context.Context, orgID, keyID, caller string, digest 
 		kp, err = s.store.GetKey(orgID, keyID)
 	} else {
 		kp, err = s.store.GetCurrentKey(orgID)
+		// Auto-provision an org key on first signing request.
+		if err == keystore.ErrKeyNotFound {
+			if genErr := s.EnsureOrgKey(ctx, orgID); genErr != nil {
+				return "", nil, fmt.Errorf("provision key for org %s: %w", orgID, genErr)
+			}
+			kp, err = s.store.GetCurrentKey(orgID)
+		}
 	}
 	if err != nil {
 		return "", nil, fmt.Errorf("get key for org %s: %w", orgID, err)

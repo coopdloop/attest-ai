@@ -46,17 +46,17 @@ type Team struct {
 }
 
 type APIKey struct {
-	ID          string     `json:"id" db:"id"`
-	OrgID       string     `json:"org_id" db:"org_id"`
-	CreatedBy   *string    `json:"created_by,omitempty" db:"created_by"`
-	Name        string     `json:"name" db:"name"`
-	KeyHash     string     `json:"-" db:"key_hash"`
-	KeyPrefix   string     `json:"key_prefix" db:"key_prefix"`
-	Scopes      []string   `json:"scopes" db:"scopes"`
-	LastUsedAt  *time.Time `json:"last_used_at,omitempty" db:"last_used_at"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty" db:"expires_at"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty" db:"revoked_at"`
-	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
+	ID         string     `json:"id" db:"id"`
+	OrgID      string     `json:"org_id" db:"org_id"`
+	CreatedBy  *string    `json:"created_by,omitempty" db:"created_by"`
+	Name       string     `json:"name" db:"name"`
+	KeyHash    string     `json:"-" db:"key_hash"`
+	KeyPrefix  string     `json:"key_prefix" db:"key_prefix"`
+	Scopes     []string   `json:"scopes" db:"scopes"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty" db:"last_used_at"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty" db:"expires_at"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty" db:"revoked_at"`
+	CreatedAt  time.Time  `json:"created_at" db:"created_at"`
 }
 
 type TokenClaims struct {

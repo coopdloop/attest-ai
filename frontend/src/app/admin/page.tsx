@@ -33,6 +33,7 @@ export default function AdminPage() {
   const [apiKeys, setApiKeys] = useState<APIKey[]>([])
   const [activeTab, setActiveTab] = useState<'users' | 'keys'>('users')
   const [newKeyName, setNewKeyName] = useState('')
+  const [newKeyBudget, setNewKeyBudget] = useState('')
   const [createdKey, setCreatedKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -69,15 +70,21 @@ export default function AdminPage() {
   async function createKey() {
     if (!auth || !newKeyName.trim()) return
     const { token, orgId } = auth
+    const budget = parseFloat(newKeyBudget)
     const res = await fetch(`/auth/orgs/${orgId}/api-keys`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: newKeyName, scopes: ['chat', 'trace:read'] }),
+      body: JSON.stringify({
+        name: newKeyName,
+        scopes: ['chat', 'trace:read'],
+        ...(isFinite(budget) && budget > 0 ? { budget_usd: budget } : {}),
+      }),
     })
     if (!res.ok) return
     const data = await res.json()
     setCreatedKey(data.key ?? null)
     setNewKeyName('')
+    setNewKeyBudget('')
     setApiKeys(prev => [{ id: data.id, name: newKeyName, key_prefix: (data.key ?? '').slice(0, 8), scopes: ['chat', 'trace:read'], created_at: new Date().toISOString(), revoked_at: null }, ...prev])
   }
 
@@ -178,6 +185,17 @@ export default function AdminPage() {
                 onKeyDown={e => e.key === 'Enter' && createKey()}
                 placeholder="Key name (e.g. ci-pipeline)"
                 className="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm
+                           text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+              <input
+                value={newKeyBudget}
+                onChange={e => setNewKeyBudget(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && createKey()}
+                type="number"
+                min="0"
+                step="0.5"
+                placeholder="Budget $ (optional)"
+                className="w-40 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm
                            text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500"
               />
               <button

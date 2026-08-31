@@ -1,5 +1,3 @@
-version: "3.9"
-
 # attest-ai — full stack compose
 # Starts all 10 services + postgres, redis, minio
 # For local dev overrides see docker-compose.dev.yml

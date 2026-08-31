@@ -61,9 +61,10 @@ export function ModelSelector({ value, onChange }: Props) {
   const [loading, setLoading] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  // Fetch models from OpenRouter on first open
+  // Fetch models once on mount so the active model's display name is available
+  // immediately (not only after the dropdown is opened).
   useEffect(() => {
-    if (!open || models.length > 0) return
+    if (models.length > 0) return
     setLoading(true)
     fetch('https://openrouter.ai/api/v1/models')
       .then(r => r.json())
@@ -75,7 +76,7 @@ export function ModelSelector({ value, onChange }: Props) {
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [open, models.length])
+  }, [models.length])
 
   useEffect(() => {
     function handler(e: MouseEvent) {

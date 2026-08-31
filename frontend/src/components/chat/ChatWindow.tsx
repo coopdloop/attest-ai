@@ -4,6 +4,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import type { Message, MessageMeta } from '@/types'
 import { ModelSelector, cachedModels } from './ModelSelector'
+import { BundleViewer } from '@/components/attestation/BundleViewer'
+import { Modal } from '@/components/ui/Modal'
 
 const DEFAULT_MODEL = 'openrouter/ox-alpha'
 const STORAGE_KEY   = 'attest-ai:conversations'
@@ -15,6 +17,7 @@ interface Conversation {
   model: string
   lastMeta: MessageMeta | null
   createdAt: string
+  pending?: string   // first message queued from the starter screen; auto-sent on load
 }
 
 function newConversation(model: string): Conversation {
@@ -26,10 +29,26 @@ function loadConversations(): Conversation[] {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Conversation[]
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      if (Array.isArray(parsed)) return parsed
     }
   } catch { /* ignore */ }
-  return [newConversation(DEFAULT_MODEL)]
+  return []
+}
+
+function saveConversations(cs: Conversation[]) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cs)) } catch { /* quota */ }
+}
+
+// Create a new conversation seeded with a first message and persist it, returning
+// the new id. Used by the starter screen before navigating to /chat/<id>.
+export function createConversationWithMessage(model: string, text: string): string {
+  const convo: Conversation = {
+    ...newConversation(model),
+    title: text.slice(0, 50) || 'New chat',
+    pending: text,
+  }
+  saveConversations([convo, ...loadConversations()])
+  return convo.id
 }
 
 function toAPIMessages(msgs: Message[]) {
@@ -50,28 +69,36 @@ function getModelDisplayName(model: string): string {
   return cachedModels.find(m => m.id === id)?.name ?? id.split('/').pop() ?? model
 }
 
-export function ChatWindow() {
+export function ChatWindow({ chatId }: { chatId: string }) {
   const router = useRouter()
   const [model, setModel] = useState(DEFAULT_MODEL)
-  const [conversations, setConversations] = useState<Conversation[]>([newConversation(DEFAULT_MODEL)])
-  const [activeId, setActiveId]   = useState<string>('')
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const activeId = chatId
   const [input, setInput]         = useState('')
   const [loading, setLoading]     = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [hydrated, setHydrated]       = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
+  const [notFound, setNotFound]       = useState(false)
+  const [legendHover, setLegendHover] = useState(false)
+  const [legendPinned, setLegendPinned] = useState(false)
   const bottomRef   = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const autoSentRef = useRef<Set<string>>(new Set())
 
-  const activeConvo = conversations.find(c => c.id === activeId) ?? conversations[0]
+  const activeConvo = conversations.find(c => c.id === activeId) ?? null
 
   // Load from localStorage after hydration to avoid SSR mismatch
   useEffect(() => {
     const stored = loadConversations()
     setConversations(stored)
-    setActiveId(stored[0]?.id ?? '')
     setHydrated(true)
-  }, [])
+    if (stored.length > 0 && !stored.some(c => c.id === chatId)) {
+      setNotFound(true)
+    }
+    const active = stored.find(c => c.id === chatId)
+    if (active) setModel(active.model)
+  }, [chatId])
 
   // Verify token on mount — catches stale/expired tokens before the first send
   useEffect(() => {
@@ -98,12 +125,8 @@ export function ChatWindow() {
   // Persist to localStorage (only after hydration so we don't overwrite with defaults)
   useEffect(() => {
     if (!hydrated) return
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations)) } catch { /* quota */ }
+    saveConversations(conversations)
   }, [conversations, hydrated])
-
-  useEffect(() => {
-    if (conversations.length > 0 && !activeId) setActiveId(conversations[0].id)
-  }, [conversations, activeId])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -117,36 +140,65 @@ export function ChatWindow() {
   }, [input])
 
   function startNewChat() {
-    const convo = newConversation(model)
-    setConversations(prev => [convo, ...prev])
-    setActiveId(convo.id)
-    setInput('')
+    router.push('/chat')
   }
 
   function deleteConvo(id: string) {
-    setConversations(prev => {
-      const next = prev.filter(c => c.id !== id)
-      return next.length === 0 ? [newConversation(model)] : next
-    })
-    if (activeId === id) setActiveId('')
+    const remaining = conversations.filter(c => c.id !== id)
+    setConversations(remaining)
+    saveConversations(remaining)
+    if (activeId === id) {
+      router.push(remaining.length > 0 ? `/chat/${remaining[0].id}` : '/chat')
+    }
   }
 
   function updateConvo(id: string, updater: (c: Conversation) => Conversation) {
     setConversations(prev => prev.map(c => c.id === id ? updater(c) : c))
   }
 
-  const sendMessage = useCallback(async () => {
-    if (!input.trim() || loading) return
+  // Re-fetch the bundle from trace_query_service, which verifies the Ed25519
+  // signature, then merge signature_valid into the last message's meta.
+  const verifyBundle = useCallback(async (convoId: string, sessionId: string) => {
+    // Small delay: finalize runs at end of stream; give the write a moment to land.
+    await new Promise(r => setTimeout(r, 600))
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const resp = await fetch(`/tqs/traces/${sessionId}/bundle`)
+        if (resp.ok) {
+          const verified = await resp.json()
+          updateConvo(convoId, c => {
+            const msgs = [...c.messages]
+            const last = msgs[msgs.length - 1]
+            if (last?.meta?.attestation_bundle) {
+              last.meta = {
+                ...last.meta,
+                attestation_bundle: { ...last.meta.attestation_bundle, ...verified },
+              }
+              msgs[msgs.length - 1] = { ...last }
+            }
+            return { ...c, messages: msgs }
+          })
+          return
+        }
+      } catch { /* retry */ }
+      await new Promise(r => setTimeout(r, 800))
+    }
+  }, [])
 
-    const userMsg: Message = { role: 'user', content: input.trim() }
-    const currentId    = activeId || conversations[0].id
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim()
+    if (!text || loading) return
+
+    const userMsg: Message = { role: 'user', content: text }
+    const currentId    = activeId
     const currentModel = model
+    if (!currentId) return
     const isFirst = (conversations.find(c => c.id === currentId)?.messages.length ?? 0) === 0
 
     updateConvo(currentId, c => ({
       ...c,
       messages: [...c.messages, userMsg],
-      ...(isFirst ? { title: input.trim().slice(0, 50) } : {}),
+      ...(isFirst ? { title: text.slice(0, 50) } : {}),
     }))
     setInput('')
     setLoading(true)
@@ -197,7 +249,7 @@ export function ChatWindow() {
               session_id: string; latency_ms: number; cost_usd: number | null
               iterations: number; attestation_ids: string[]; reasoning: string | null
               usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number }
-              model: string
+              model: string; attestation_bundle?: MessageMeta['attestation_bundle']
             }
             const msgMeta: MessageMeta = {
               session_id:      raw.session_id,
@@ -208,12 +260,20 @@ export function ChatWindow() {
               attestation_ids: raw.attestation_ids ?? [],
               reasoning:       raw.reasoning,
               usage:           raw.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+              attestation_bundle: raw.attestation_bundle,
             }
             updateConvo(currentId, c => {
               const msgs = [...c.messages]
               msgs[msgs.length - 1] = { ...msgs[msgs.length - 1], meta: msgMeta }
               return { ...c, messages: msgs, lastMeta: msgMeta }
             })
+
+            // Verify the signature after the stream ends. The inline bundle proves
+            // it was signed; trace_query_service re-checks the Ed25519 signature
+            // against the org public key and returns signature_valid.
+            if (msgMeta.attestation_bundle && msgMeta.session_id) {
+              verifyBundle(currentId, msgMeta.session_id)
+            }
           } catch { /* ignore */ }
           lastEvent = ''
           return
@@ -269,15 +329,20 @@ export function ChatWindow() {
     } finally {
       setLoading(false)
     }
-  }, [input, loading, activeId, conversations, model, router])
+  }, [input, loading, activeId, conversations, model, router, verifyBundle])
+
+  // Auto-send a pending first message queued by the starter screen.
+  useEffect(() => {
+    if (!hydrated || !activeConvo?.pending || loading) return
+    if (autoSentRef.current.has(activeConvo.id)) return
+    autoSentRef.current.add(activeConvo.id)
+    const pending = activeConvo.pending
+    updateConvo(activeConvo.id, c => { const { pending: _p, ...rest } = c; return rest })
+    sendMessage(pending)
+  }, [hydrated, activeConvo, loading, sendMessage])
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
-  }
-
-  function logout() {
-    ['auth_token', 'org_id', 'user_id'].forEach(k => localStorage.removeItem(k))
-    router.replace('/login')
   }
 
   // Aggregate stats across all messages in the active conversation
@@ -335,12 +400,11 @@ export function ChatWindow() {
         </div>
       )}
 
-      {/* ── Left sidebar ─────────────────────────────────── */}
+      {/* ── Chat conversation panel (secondary sidebar) ─────── */}
       <aside className={`flex flex-col bg-gray-900 border-r border-gray-800 transition-all duration-200
                          ${sidebarOpen ? 'w-60' : 'w-0 overflow-hidden'}`}>
-        <div className="flex items-center gap-2.5 px-4 py-4 border-b border-gray-800 shrink-0">
-          <div className="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center text-xs font-bold shrink-0">A</div>
-          <span className="font-semibold text-sm">attest-ai</span>
+        <div className="flex items-center justify-between px-4 py-3.5 border-b border-gray-800 shrink-0">
+          <span className="font-semibold text-sm text-gray-300">Chats</span>
         </div>
 
         <div className="px-3 pt-3 pb-1 shrink-0">
@@ -358,7 +422,7 @@ export function ChatWindow() {
           {conversations.map(c => (
             <div key={c.id} className="group relative">
               <button
-                onClick={() => setActiveId(c.id)}
+                onClick={() => router.push(`/chat/${c.id}`)}
                 className={`w-full text-left px-3 py-2 rounded-lg text-sm truncate transition-colors pr-7
                             ${c.id === activeId ? 'bg-gray-800 text-white' : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'}`}
               >
@@ -377,29 +441,6 @@ export function ChatWindow() {
           ))}
         </div>
 
-        <div className="border-t border-gray-800 px-4 py-3 space-y-2 shrink-0">
-          {[
-            { href: '/traces',    label: 'Traces',    icon: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2' },
-            { href: '/harnesses', label: 'Harnesses', icon: 'M4 6h16M4 10h16M4 14h16M4 18h16' },
-            { href: '/admin',     label: 'Admin',     icon: 'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z' },
-          ].map(({ href, label, icon }) => (
-            <a key={href} href={href}
-               className="flex items-center gap-2 text-xs text-gray-500 hover:text-gray-300 transition-colors">
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
-              </svg>
-              {label}
-            </a>
-          ))}
-          <button onClick={logout}
-                  className="flex items-center gap-2 text-xs text-gray-500 hover:text-red-400 transition-colors w-full">
-            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-            </svg>
-            Sign out
-          </button>
-        </div>
       </aside>
 
       {/* ── Main area ─────────────────────────────────────── */}
@@ -417,7 +458,7 @@ export function ChatWindow() {
             </button>
             <ModelSelector
               value={model}
-              onChange={m => { setModel(m); updateConvo(activeId, c => ({ ...c, model: m })) }}
+              onChange={m => { setModel(m); if (activeId) updateConvo(activeId, c => ({ ...c, model: m })) }}
             />
           </div>
 
@@ -475,30 +516,23 @@ export function ChatWindow() {
 
         {/* ── Messages ─────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto">
-          {(!activeConvo || activeConvo.messages.length === 0) ? (
+          {(!hydrated) ? (
+            <div className="h-full" />
+          ) : (notFound || !activeConvo) ? (
             <div className="flex flex-col items-center justify-center h-full text-center px-4">
-              <div className="w-16 h-16 bg-blue-600/20 rounded-2xl flex items-center justify-center mb-5">
-                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-xl font-bold">A</div>
+              <div className="w-14 h-14 bg-gray-800 rounded-2xl flex items-center justify-center mb-5 text-gray-500">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.7} d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
               </div>
-              <h2 className="text-2xl font-semibold text-gray-200 mb-2">How can I help you?</h2>
-              <p className="text-gray-500 text-sm max-w-md">
-                Cryptographically verifiable reasoning — every step attested.
+              <h2 className="text-xl font-semibold text-gray-200 mb-2">Chat not found</h2>
+              <p className="text-gray-500 text-sm max-w-md mb-5">
+                This conversation doesn&apos;t exist on this device, or was deleted.
               </p>
-              <div className="mt-6 grid grid-cols-2 gap-2 max-w-lg w-full">
-                {[
-                  'Scan a domain for open ports',
-                  'Analyze a suspicious IP address',
-                  'Explain a CVE and its impact',
-                  'Draft a threat model for a web app',
-                ].map(s => (
-                  <button key={s} onClick={() => setInput(s)}
-                          className="text-left px-4 py-3 rounded-xl bg-gray-800 hover:bg-gray-700
-                                     text-sm text-gray-300 border border-gray-700 hover:border-gray-600
-                                     transition-colors leading-snug">
-                    {s}
-                  </button>
-                ))}
-              </div>
+              <button onClick={() => router.push('/chat')}
+                      className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+                Start a new chat
+              </button>
             </div>
           ) : (
             <div className="max-w-3xl mx-auto px-4 py-6 space-y-6 w-full">
@@ -509,6 +543,12 @@ export function ChatWindow() {
                   isLast={i === activeConvo.messages.length - 1}
                   loading={loading}
                   currentModel={model}
+                  legend={{
+                    pinned: legendPinned,
+                    onEnter: () => setLegendHover(true),
+                    onLeave: () => setLegendHover(false),
+                    onToggle: () => setLegendPinned(p => !p),
+                  }}
                 />
               ))}
               <div ref={bottomRef} />
@@ -534,7 +574,7 @@ export function ChatWindow() {
                            leading-6 disabled:opacity-50"
               />
               <button
-                onClick={sendMessage}
+                onClick={() => sendMessage()}
                 disabled={loading || !input.trim()}
                 className="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg
                            bg-blue-600 hover:bg-blue-500 disabled:opacity-30
@@ -558,6 +598,14 @@ export function ChatWindow() {
           </div>
         </div>
       </div>
+
+      {/* Single shared metrics legend (one at a time across all messages) */}
+      <MetricsLegend
+        open={legendHover || legendPinned}
+        pinned={legendPinned}
+        onPin={() => setLegendPinned(p => !p)}
+        onClose={() => { setLegendPinned(false); setLegendHover(false) }}
+      />
     </div>
   )
 }
@@ -580,8 +628,18 @@ function StatDivider() {
 
 // ── Per-message inline meta ──────────────────────────────────────────────────
 
-function MessageMiniMeta({ meta, currentModel }: { meta: MessageMeta; currentModel: string }) {
+interface LegendControl {
+  pinned: boolean
+  onEnter: () => void
+  onLeave: () => void
+  onToggle: () => void
+}
+
+function MessageMiniMeta({ meta, currentModel, legend }: {
+  meta: MessageMeta; currentModel: string; legend: LegendControl
+}) {
   const [showReasoning, setShowReasoning] = useState(false)
+  const [showBundle, setShowBundle] = useState(false)
 
   const usedModel    = meta.model || currentModel
   const contextLen   = getContextLength(usedModel)
@@ -610,42 +668,18 @@ function MessageMiniMeta({ meta, currentModel }: { meta: MessageMeta; currentMod
   return (
     <div className="mt-2 space-y-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
-        {/* Info icon with legend tooltip */}
-        <div className="group relative inline-flex items-center">
-          <svg className="w-3 h-3 text-gray-700 hover:text-gray-500 cursor-default transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        {/* Info icon: hover to peek the metrics legend, click to pin/unpin it */}
+        <button
+          onMouseEnter={legend.onEnter}
+          onMouseLeave={legend.onLeave}
+          onClick={legend.onToggle}
+          className={`inline-flex items-center transition-colors ${legend.pinned ? 'text-blue-400' : 'text-gray-700 hover:text-gray-400'}`}
+          title="Metrics legend — click to pin"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
-          <div className="absolute bottom-full left-0 mb-2 z-50 hidden group-hover:block pointer-events-none">
-            <div className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2.5 shadow-xl w-64">
-              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-2 font-semibold">Response metrics</p>
-              <div className="space-y-1.5">
-                {[
-                  ['Model', 'The LLM that generated this response'],
-                  ['% ctx', 'Context window used — total tokens ÷ model max'],
-                  ['N₁ → N₂', 'Prompt tokens sent → completion tokens received'],
-                  ['1.2s', 'End-to-end latency from send to last token'],
-                  ['$0.0001', 'Estimated API cost for this response'],
-                  ['✓ attested', 'Cryptographically signed trace events stored'],
-                  ['reasoning', 'Chain-of-thought the model returned (expandable)'],
-                ].map(([k, v]) => (
-                  <div key={k} className="flex gap-2">
-                    <span className="text-gray-400 font-mono text-[10px] w-16 shrink-0 leading-relaxed">{k}</span>
-                    <span className="text-gray-500 text-[10px] leading-relaxed">{v}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-2 pt-2 border-t border-gray-800">
-                <div className="flex gap-2 items-center">
-                  <div className="flex gap-0.5 h-1.5 w-12 rounded-full overflow-hidden bg-gray-800">
-                    <div className="bg-blue-600/70 w-8 rounded-l-full" />
-                    <div className="bg-purple-500/70 flex-1 rounded-r-full" />
-                  </div>
-                  <span className="text-[10px] text-gray-600">blue = prompt, purple = completion</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        </button>
 
         {/* Model + context */}
         <span className="text-gray-500 font-medium">{modelName}</span>
@@ -691,6 +725,34 @@ function MessageMiniMeta({ meta, currentModel }: { meta: MessageMeta; currentMod
           </>
         )}
 
+        {/* Signed bundle modal trigger */}
+        {meta.attestation_bundle && (
+          <>
+            <span className="text-gray-700">·</span>
+            <button
+              onClick={() => setShowBundle(true)}
+              className="text-emerald-600 hover:text-emerald-400 transition-colors"
+              title="View the signed attestation bundle for this response"
+            >
+              🧾 view receipt
+            </button>
+          </>
+        )}
+
+        {/* Jump to full trace page */}
+        {meta.session_id && (
+          <>
+            <span className="text-gray-700">·</span>
+            <a
+              href={`/traces/${meta.session_id}`}
+              className="text-blue-600 hover:text-blue-400 transition-colors"
+              title="Open the full trace timeline for this session"
+            >
+              open trace ↗
+            </a>
+          </>
+        )}
+
         {/* Reasoning toggle */}
         {meta.reasoning && (
           <>
@@ -726,6 +788,98 @@ function MessageMiniMeta({ meta, currentModel }: { meta: MessageMeta; currentMod
           {meta.reasoning}
         </div>
       )}
+
+      {/* Full signed attestation bundle (modal) */}
+      {meta.attestation_bundle && (
+        <Modal
+          open={showBundle}
+          onClose={() => setShowBundle(false)}
+          title="Attestation Receipt"
+          maxWidth="max-w-lg"
+        >
+          <BundleViewer bundle={meta.attestation_bundle} sessionId={meta.session_id} />
+          <div className="mt-4 flex items-center justify-between text-xs">
+            <span className="text-gray-600">
+              This receipt was returned with the response. The signature is
+              re-verified against the org public key.
+            </span>
+          </div>
+          <a
+            href={`/traces/${meta.session_id}`}
+            className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-blue-400 hover:text-blue-300"
+          >
+            View full trace timeline ↗
+          </a>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
+// ── Metrics legend side panel ────────────────────────────────────────────────
+
+function MetricsLegend({ open, pinned, onPin, onClose }: {
+  open: boolean; pinned: boolean; onPin: () => void; onClose: () => void
+}) {
+  return (
+    <div
+      className={`fixed top-0 right-0 z-40 h-screen w-72 bg-gray-900 border-l border-gray-800 shadow-2xl
+                  transition-transform duration-200 ease-out flex flex-col
+                  ${open ? 'translate-x-0' : 'translate-x-full'}`}
+    >
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
+        <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">Response metrics</span>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onPin}
+            title={pinned ? 'Unpin' : 'Pin'}
+            className={`p-1 rounded transition-colors ${pinned ? 'text-blue-400 hover:text-blue-300' : 'text-gray-600 hover:text-gray-300'}`}
+          >
+            <svg className="w-3.5 h-3.5" fill={pinned ? 'currentColor' : 'none'} viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+            </svg>
+          </button>
+          {pinned && (
+            <button onClick={onClose} title="Close" className="p-1 rounded text-gray-600 hover:text-gray-300 transition-colors">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
+        {[
+          ['Model', 'The LLM that generated this response'],
+          ['% ctx', 'Context window used — total tokens ÷ model max'],
+          ['N₁ → N₂', 'Prompt tokens sent → completion tokens received'],
+          ['1.2s', 'End-to-end latency from send to last token'],
+          ['$0.0001', 'Estimated API cost for this response'],
+          ['✓ attested', 'Cryptographically signed trace events stored'],
+          ['reasoning', 'Chain-of-thought the model returned (expandable)'],
+        ].map(([k, v]) => (
+          <div key={k} className="flex gap-3">
+            <span className="text-gray-300 font-mono text-xs w-20 shrink-0">{k}</span>
+            <span className="text-gray-500 text-xs leading-relaxed">{v}</span>
+          </div>
+        ))}
+        <div className="mt-2 pt-3 border-t border-gray-800">
+          <div className="flex gap-2 items-center">
+            <div className="flex gap-0.5 h-1.5 w-12 rounded-full overflow-hidden bg-gray-800">
+              <div className="bg-blue-600/70 w-8 rounded-l-full" />
+              <div className="bg-purple-500/70 flex-1 rounded-r-full" />
+            </div>
+            <span className="text-xs text-gray-600">blue = prompt, purple = completion</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="px-4 py-2.5 border-t border-gray-800 shrink-0">
+        <span className="text-[10px] text-gray-600">
+          {pinned ? 'Pinned · click the info icon to unpin' : 'Hover to peek · click the info icon to pin'}
+        </span>
+      </div>
     </div>
   )
 }
@@ -733,12 +887,13 @@ function MessageMiniMeta({ meta, currentModel }: { meta: MessageMeta; currentMod
 // ── Message row ──────────────────────────────────────────────────────────────
 
 function MessageRow({
-  message, isLast, loading, currentModel,
+  message, isLast, loading, currentModel, legend,
 }: {
   message: Message
   isLast: boolean
   loading: boolean
   currentModel: string
+  legend: LegendControl
 }) {
   const isUser  = message.role === 'user'
   const isEmpty = !message.content && isLast && loading
@@ -769,7 +924,7 @@ function MessageRow({
           ) : message.content}
         </div>
         {message.meta && (
-          <MessageMiniMeta meta={message.meta} currentModel={currentModel} />
+          <MessageMiniMeta meta={message.meta} currentModel={currentModel} legend={legend} />
         )}
       </div>
     </div>

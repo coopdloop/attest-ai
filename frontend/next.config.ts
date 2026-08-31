@@ -6,6 +6,7 @@ const traceURL     = process.env.NEXT_PUBLIC_TRACE_QUERY_URL ?? 'http://localhos
 const ctxURL       = process.env.NEXT_PUBLIC_CTX_URL         ?? 'http://localhost:8001'
 
 const nextConfig: NextConfig = {
+  devIndicators: false,
   async rewrites() {
     return [
       { source: '/v1/:path*',   destination: `${gatewayURL}/v1/:path*` },

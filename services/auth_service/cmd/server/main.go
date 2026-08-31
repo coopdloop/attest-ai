@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -24,6 +25,16 @@ func main() {
 	dsn := mustEnv("DATABASE_URL")
 	jwtKeyPath := envOr("JWT_PRIVATE_KEY_PATH", "/keys/jwt_private.pem")
 	singleUser := os.Getenv("SINGLE_USER_MODE") == "true"
+
+	// Reject known-insecure default secrets outside of dev.
+	if os.Getenv("APP_ENV") == "production" {
+		for _, k := range []string{"POSTGRES_PASSWORD", "MINIO_ROOT_PASSWORD", "OBJECT_STORE_SECRET_KEY", "DATABASE_URL"} {
+			v := os.Getenv(k)
+			if strings.Contains(v, "changeme") {
+				log.Fatal().Str("var", k).Msg("insecure default secret detected in production; set a strong value")
+			}
+		}
+	}
 
 	ctx := context.Background()
 
