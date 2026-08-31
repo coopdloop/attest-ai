@@ -8,6 +8,15 @@ export default [
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
+      // Internal app pages use plain <a> for hard nav across route groups
+      // (auth redirects, full-bleed marketing) — intentional, not a Link concern.
+      '@next/next/no-html-link-for-pages': 'off',
+      'react/no-unescaped-entities': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', {
+        argsIgnorePattern: '^_',
+        varsIgnorePattern: '^_',
+        ignoreRestSiblings: true,
+      }],
     },
   },
 ]

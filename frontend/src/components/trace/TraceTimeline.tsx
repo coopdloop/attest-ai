@@ -49,7 +49,7 @@ export function TraceTimeline({ sessionId, events, integrityValid, tamperedAtSeq
         <div className="absolute left-4 top-0 bottom-0 w-px bg-gray-800" />
 
         <div className="space-y-2">
-          {events.map((event, i) => (
+          {events.map((event) => (
             <TraceEventRow
               key={event.id}
               event={event}

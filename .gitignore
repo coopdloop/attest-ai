@@ -54,3 +54,6 @@ Thumbs.db
 /config/keys/
 infra/keys/
 infra/.env
+
+# Build artifacts
+*.tsbuildinfo
