@@ -58,6 +58,7 @@ func main() {
 
 	r.GET("/traces", h.ListSessions)
 	r.GET("/traces/:session_id", h.GetTrace)
+	r.GET("/traces/:session_id/conversation", h.GetConversation)
 	r.GET("/traces/:session_id/bundle", h.GetBundle)
 	r.GET("/traces/:session_id/export", h.ExportTrace)
 

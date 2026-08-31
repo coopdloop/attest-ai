@@ -148,6 +148,57 @@ func (h *QueryHandler) GetTrace(c *gin.Context) {
 	})
 }
 
+// GET /traces/:session_id/conversation — plain request/response turns.
+// The hash-chain trace can be empty (e.g. attestation was unreachable), but the
+// turns table always holds the user prompt + agent reply, so this guarantees
+// API-key sessions are viewable in the UI.
+func (h *QueryHandler) GetConversation(c *gin.Context) {
+	sessionID := c.Param("session_id")
+	ctx := c.Request.Context()
+
+	rows, err := h.db.Query(ctx, `
+		SELECT turn_index, user_message, COALESCE(agent_response, ''), status,
+		       COALESCE(model_id, ''), COALESCE(input_tokens, 0), COALESCE(output_tokens, 0),
+		       COALESCE(cost_usd, 0), COALESCE(latency_ms, 0), started_at, completed_at
+		FROM turns WHERE session_id = $1 ORDER BY turn_index ASC`, sessionID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "conversation query failed"})
+		return
+	}
+	defer rows.Close()
+
+	turns := []gin.H{}
+	for rows.Next() {
+		var (
+			idx                      int
+			userMsg, agentResp       string
+			status, modelID          string
+			inTok, outTok, latencyMs int
+			cost                     float64
+			startedAt                time.Time
+			completedAt              *time.Time
+		)
+		if err := rows.Scan(&idx, &userMsg, &agentResp, &status, &modelID,
+			&inTok, &outTok, &cost, &latencyMs, &startedAt, &completedAt); err != nil {
+			continue
+		}
+		turns = append(turns, gin.H{
+			"turn_index":     idx,
+			"user_message":   userMsg,
+			"agent_response": agentResp,
+			"status":         status,
+			"model_id":       modelID,
+			"input_tokens":   inTok,
+			"output_tokens":  outTok,
+			"cost_usd":       cost,
+			"latency_ms":     latencyMs,
+			"started_at":     startedAt,
+			"completed_at":   completedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"session_id": sessionID, "turns": turns, "count": len(turns)})
+}
+
 const genesisHash = "0000000000000000000000000000000000000000000000000000000000000000"
 
 // hashChain recomputes SHA-256(prevHash || payloadHash), matching

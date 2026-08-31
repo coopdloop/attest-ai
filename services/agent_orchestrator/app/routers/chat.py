@@ -121,12 +121,21 @@ async def chat_completions(
     now = datetime.now(timezone.utc)
 
     # Caller type: API-key traffic is machine-driven, browser sessions are human.
-    mode = "machine" if (request.headers.get("X-Caller-Type") == "api_key") else "human"
+    is_api_key = request.headers.get("X-Caller-Type") == "api_key"
+    mode = "machine" if is_api_key else "human"
+    # For api_key callers the gateway forwards the key's id as X-User-Id; attribute
+    # the session to that key so Governance can roll up per-key spend.
+    api_key_id = None
+    if is_api_key:
+        try:
+            api_key_id = uuid.UUID(str(request.headers.get("X-User-Id") or ""))
+        except ValueError:
+            api_key_id = None
 
     # Create session
     await pool.execute(
-        "INSERT INTO sessions (id, org_id, agent_id, mode, status, started_at) VALUES ($1,$2,$3,$4,'active',$5)",
-        uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), mode, now,
+        "INSERT INTO sessions (id, org_id, agent_id, mode, status, api_key_id, started_at) VALUES ($1,$2,$3,$4,'active',$5,$6)",
+        uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), mode, api_key_id, now,
     )
 
     # Build turn index
@@ -253,7 +262,9 @@ async def chat_completions(
 
 @router.get("/models")
 async def list_models(request: Request) -> dict:
-    import os, httpx
+    import os
+
+    import httpx
     key = os.getenv("OPENROUTER_API_KEY", "")
     try:
         async with httpx.AsyncClient(timeout=10) as client:

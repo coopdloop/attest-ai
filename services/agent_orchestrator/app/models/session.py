@@ -1,5 +1,6 @@
 from __future__ import annotations
-from datetime import datetime
+
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
@@ -50,4 +51,4 @@ class TraceEvent(BaseModel):
     org_id: str
     event_type: str  # reasoning_step | tool_call | tool_response | model_swap | retry | completion | error
     payload: dict[str, Any]
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

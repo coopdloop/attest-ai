@@ -32,7 +32,11 @@ function ChatIndex() {
           (c.messages ?? []).some(m => m.meta?.session_id === sessionParam)
         )
         if (match) { router.replace(`/chat/${match.id}`); return }
-      } catch { /* fall through to starter */ }
+      } catch { /* fall through */ }
+      // No local conversation for this session (e.g. an API-key session created
+      // outside this browser). Show it in the trace/session viewer instead.
+      router.replace(`/traces/${sessionParam}`)
+      return
     }
     setReady(true)
   }, [router, sessionParam])
