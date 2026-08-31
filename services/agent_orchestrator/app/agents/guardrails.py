@@ -22,7 +22,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-
 # Tool-name substrings that imply active network probing (not passive OSINT).
 _ACTIVE_SCAN_PATTERNS = (
     "active", "scan", "portscan", "port_scan", "nmap", "brute", "bruteforce",

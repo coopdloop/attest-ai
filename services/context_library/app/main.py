@@ -1,10 +1,9 @@
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
-
 from app.db.database import close_pool, init_pool
 from app.routers import harnesses
+from fastapi import FastAPI
 
 
 @asynccontextmanager
@@ -29,12 +28,13 @@ async def health() -> dict:
 async def _seed_built_in_harnesses() -> None:
     """Load pre-built harness YAMLs from /config/harnesses into the default org."""
     import glob
-    import uuid
     import json
-    import yaml
+    import uuid
     from pathlib import Path
+
+    import yaml
     from app.db.database import get_conn
-    from app.models.harness import HarnessDefinition, AttestationPolicy
+    from app.models.harness import AttestationPolicy, HarnessDefinition
 
     harness_dir = os.getenv("BUILT_IN_HARNESS_DIR", "/config/harnesses")
     default_org_id = os.getenv("DEFAULT_ORG_ID", "00000000-0000-0000-0000-000000000001")

@@ -11,8 +11,6 @@ import uuid
 from datetime import datetime
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-
 from app.models.session import (
     CreateSessionRequest,
     SessionMode,
@@ -21,6 +19,7 @@ from app.models.session import (
     SubmitTurnRequest,
     TurnResponse,
 )
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 

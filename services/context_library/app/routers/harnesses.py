@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, HTTPException, status
-
 from app.db.database import get_conn
 from app.models.harness import (
     HarnessCreateRequest,
@@ -16,6 +14,7 @@ from app.models.harness import (
     HarnessRecord,
     HarnessUpdateRequest,
 )
+from fastapi import APIRouter, HTTPException, status
 
 router = APIRouter(prefix="/harnesses", tags=["harnesses"])
 

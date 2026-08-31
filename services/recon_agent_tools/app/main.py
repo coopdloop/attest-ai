@@ -12,8 +12,8 @@ All tools enforce scope before execution.
 
 from __future__ import annotations
 
-import os
 import ipaddress
+import os
 import socket
 from typing import Any
 

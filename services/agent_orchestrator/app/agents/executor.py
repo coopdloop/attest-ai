@@ -13,17 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import Any, AsyncGenerator, AsyncIterator
 
-import os
 import httpx
 import litellm
-
+from app.agents.guardrails import GuardrailDecision, GuardrailEngine
 from app.mcp.client import MCPClient
 from app.models.session import TraceEvent
-from app.agents.guardrails import GuardrailEngine, GuardrailDecision
 
 
 class AgentExecutor:

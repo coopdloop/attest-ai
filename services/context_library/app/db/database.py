@@ -1,6 +1,7 @@
-import asyncpg
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
+
+import asyncpg
 
 _pool: asyncpg.Pool | None = None
 

@@ -2,11 +2,10 @@ import os
 from contextlib import asynccontextmanager
 
 import asyncpg
-from fastapi import FastAPI
-
 from app.agents.executor import AgentExecutor
 from app.mcp.client import MCPClient
 from app.routers import chat, sessions
+from fastapi import FastAPI
 
 
 @asynccontextmanager
