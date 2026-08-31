@@ -8,6 +8,7 @@ const ctxURL       = process.env.NEXT_PUBLIC_CTX_URL         ?? 'http://localhos
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  output: 'standalone',
   env: {
     NEXT_PUBLIC_APP_VERSION: version,
   },
