@@ -140,22 +140,38 @@ func (h *AttestationHandler) FinalizeSession(c *gin.Context) {
 	bundleData, _ := json.Marshal(bundle)
 	_ = h.objStore.PutObject(ctx, bundleKey, bundleData, "application/json")
 
-	// Persist to postgres
+	// Persist to postgres. A session can now be finalized more than once — a
+	// continued (multi-turn) session re-finalizes after every turn so the
+	// bundle always reflects the current hash-chain root — so this is an
+	// upsert keyed on the session's one-bundle-per-session constraint rather
+	// than a plain insert.
 	bundleID := uuid.New().String()
-	_, err = h.db.Exec(ctx, `
+	err = h.db.QueryRow(ctx, `
 		INSERT INTO attestation_bundles
 			(id, session_id, org_id, root_hash, event_count, model_id, policy_version,
 			 signature, signing_key_id, bundle_blob_key, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (session_id) DO UPDATE SET
+			root_hash = EXCLUDED.root_hash,
+			event_count = EXCLUDED.event_count,
+			model_id = EXCLUDED.model_id,
+			policy_version = EXCLUDED.policy_version,
+			signature = EXCLUDED.signature,
+			signing_key_id = EXCLUDED.signing_key_id,
+			bundle_blob_key = EXCLUDED.bundle_blob_key,
+			created_at = EXCLUDED.created_at
+		RETURNING id
 	`, bundleID, sessionID, req.OrgID, rootHash, eventCount, req.ModelID, req.PolicyVersion,
-		bundle.Signature, keyID, bundleKey, bundle.CreatedAt)
+		bundle.Signature, keyID, bundleKey, bundle.CreatedAt).Scan(&bundleID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to persist attestation bundle"})
 		return
 	}
 
-	// Update session with attestation_id
-	_, _ = h.db.Exec(ctx, `UPDATE sessions SET attestation_id = $1, status = 'completed' WHERE id = $2`,
+	// Update session with attestation_id. Session status is owned by the
+	// turn/session lifecycle (agent_orchestrator), not here — a session
+	// finalized mid-task (e.g. paused on a client-side tool call) isn't done.
+	_, _ = h.db.Exec(ctx, `UPDATE sessions SET attestation_id = $1 WHERE id = $2`,
 		bundleID, sessionID)
 
 	c.JSON(http.StatusOK, bundle)

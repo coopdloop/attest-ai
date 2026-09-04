@@ -7,6 +7,8 @@ GET  /agents            — lists agent_configs for the org
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -23,6 +25,13 @@ def _get_pool(request: Request) -> asyncpg.Pool:
     return request.app.state.db_pool
 
 
+def _hash_messages(messages: list[dict[str, Any]]) -> str:
+    """Stable hash of a message list, used to detect that a new request's
+    history is a continuation of a session we've already seen a prefix of."""
+    canonical = json.dumps(messages, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 async def _persist_completion(
     pool: asyncpg.Pool,
     turn_id: str,
@@ -31,9 +40,13 @@ async def _persist_completion(
     meta: dict,
     usage: dict,
     model: str,
+    transcript_hash: str,
+    session_status: str,
 ) -> None:
     """Persist per-turn economics + roll them up onto the session so the
-    analytics dashboard can aggregate spend/latency/tokens without recompute."""
+    analytics dashboard can aggregate spend/latency/tokens without recompute.
+    session_status is 'active' when the turn ended on a tool call the caller
+    must execute and continue (more of this task is coming), else 'completed'."""
     cost = meta.get("cost_usd")
     latency = int(meta.get("latency_ms") or 0)
     total_tokens = int(usage.get("total_tokens") or 0)
@@ -48,13 +61,13 @@ async def _persist_completion(
         response_text, cost, latency, model, in_tok, out_tok, uuid.UUID(turn_id),
     )
     await pool.execute(
-        """UPDATE sessions SET status='completed', completed_at=now(),
-                  model_id=$1,
-                  total_cost_usd = total_cost_usd + $2,
-                  total_tokens   = total_tokens + $3,
-                  total_latency_ms = total_latency_ms + $4
-           WHERE id=$5""",
-        model, cost or 0.0, total_tokens, latency, uuid.UUID(session_id),
+        """UPDATE sessions SET status=$1, completed_at=now(),
+                  model_id=$2, transcript_hash=$3,
+                  total_cost_usd = total_cost_usd + $4,
+                  total_tokens   = total_tokens + $5,
+                  total_latency_ms = total_latency_ms + $6
+           WHERE id=$7""",
+        session_status, model, transcript_hash, cost or 0.0, total_tokens, latency, uuid.UUID(session_id),
     )
 
 
@@ -152,7 +165,6 @@ async def chat_completions(
     org_id = request.headers.get("X-Org-Id") or str(agent_row.get("org_id", ""))
     if not org_id:
         raise HTTPException(status_code=400, detail="missing org context")
-    session_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
 
     # Caller type: API-key traffic is machine-driven, browser sessions are human.
@@ -167,26 +179,61 @@ async def chat_completions(
         except ValueError:
             api_key_id = None
 
-    # Create session
-    await pool.execute(
-        "INSERT INTO sessions (id, org_id, agent_id, mode, status, api_key_id, started_at) VALUES ($1,$2,$3,$4,'active',$5,$6)",
-        uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), mode, api_key_id, now,
-    )
+    messages = [m.to_llm_dict() for m in req.messages]
 
-    # Build turn index
+    # OpenAI-compatible clients (pi included) have no native conversation id —
+    # they resend the full, growing message history on every call instead. If
+    # everything but the newest message(s) matches the transcript we stored
+    # after the last turn of an existing session, this is a continuation of
+    # that session (e.g. the client executed a tool call we returned and is
+    # following up) rather than a brand-new, disconnected task — so it gets
+    # appended as a new turn there instead of starting over. Checked against a
+    # few trailing-message counts, not just the last one, because a turn with
+    # parallel tool calls means the client appends one tool-result message per
+    # call before its next request.
+    MAX_CONTINUATION_LOOKBACK = 10
+    session_id: str | None = None
+    turn_index = 0
+    if len(messages) > 1:
+        candidates: dict[str, int] = {}
+        for k in range(1, min(len(messages) - 1, MAX_CONTINUATION_LOOKBACK) + 1):
+            candidates[_hash_messages(messages[:-k])] = k
+
+        if candidates:
+            rows = await pool.fetch(
+                """SELECT id, transcript_hash FROM sessions
+                   WHERE org_id=$1 AND agent_id=$2 AND transcript_hash = ANY($3::text[])""",
+                uuid.UUID(org_id), uuid.UUID(agent_id), list(candidates.keys()),
+            )
+            if rows:
+                # Prefer the match that drops the fewest trailing messages — the
+                # most precise / most recent continuation point.
+                best = min(rows, key=lambda r: candidates[r["transcript_hash"]])
+                session_id = str(best["id"])
+                turn_index = await pool.fetchval(
+                    "SELECT COALESCE(MAX(turn_index) + 1, 0) FROM turns WHERE session_id=$1",
+                    uuid.UUID(session_id),
+                )
+
+    if session_id is None:
+        session_id = str(uuid.uuid4())
+        await pool.execute(
+            "INSERT INTO sessions (id, org_id, agent_id, mode, status, api_key_id, started_at) VALUES ($1,$2,$3,$4,'active',$5,$6)",
+            uuid.UUID(session_id), uuid.UUID(org_id), uuid.UUID(agent_id), mode, api_key_id, now,
+        )
+
     turn_id = str(uuid.uuid4())
     user_message = next(
         (m.content for m in reversed(req.messages) if m.role == "user"), ""
     )
 
     await pool.execute(
-        "INSERT INTO turns (id, session_id, org_id, turn_index, user_message, status) VALUES ($1,$2,$3,0,$4,'streaming')",
-        uuid.UUID(turn_id), uuid.UUID(session_id), uuid.UUID(org_id), user_message,
+        "INSERT INTO turns (id, session_id, org_id, turn_index, user_message, status) VALUES ($1,$2,$3,$4,$5,'streaming')",
+        uuid.UUID(turn_id), uuid.UUID(session_id), uuid.UUID(org_id), turn_index, user_message,
     )
 
     # Run agent
     executor = request.app.state.executor
-    messages = [m.to_llm_dict() for m in req.messages]
 
     agent_config = await pool.fetchrow(
         "SELECT default_model, harness_id FROM agent_configs WHERE id = $1", uuid.UUID(agent_id)
@@ -219,12 +266,12 @@ async def chat_completions(
                 if sse_str.startswith("event: meta\n"):
                     data_line = sse_str[len("event: meta\ndata: "):]
                     try:
-                        final_meta = __import__("json").loads(data_line.strip())
+                        final_meta = json.loads(data_line.strip())
                     except Exception:
                         pass
                 elif sse_str.startswith("data: ") and not sse_str.startswith("data: [DONE]"):
                     try:
-                        chunk_data = __import__("json").loads(sse_str[6:].strip())
+                        chunk_data = json.loads(sse_str[6:].strip())
                         content = (chunk_data.get("choices", [{}])[0].get("delta", {}).get("content") or "")
                         full_text += content
                     except Exception:
@@ -235,8 +282,17 @@ async def chat_completions(
             # Post-stream DB update (runs when generator is exhausted)
             try:
                 usage = final_meta.get("usage", {}) or {}
+                finish_reason = final_meta.get("finish_reason", "stop")
+                response_message = {
+                    "role": "assistant",
+                    "content": full_text or None,
+                    **({"tool_calls": final_meta["tool_calls"]} if final_meta.get("tool_calls") else {}),
+                }
+                transcript_hash = _hash_messages(messages + [response_message])
+                session_status = "active" if finish_reason == "tool_calls" else "completed"
                 await _persist_completion(
                     pool, turn_id, session_id, full_text, final_meta, usage, model,
+                    transcript_hash, session_status,
                 )
             except Exception:
                 pass
@@ -260,8 +316,19 @@ async def chat_completions(
     )
 
     usage = meta.get("usage", {})
+    finish_reason = meta.get("finish_reason", "stop")
+    response_message = {
+        "role": "assistant",
+        "content": response_text or None,
+        **({"tool_calls": meta["tool_calls"]} if meta.get("tool_calls") else {}),
+    }
     try:
-        await _persist_completion(pool, turn_id, session_id, response_text, meta, usage, model)
+        transcript_hash = _hash_messages(messages + [response_message])
+        session_status = "active" if finish_reason == "tool_calls" else "completed"
+        await _persist_completion(
+            pool, turn_id, session_id, response_text, meta, usage, model,
+            transcript_hash, session_status,
+        )
     except Exception:
         pass
 
@@ -274,12 +341,10 @@ async def chat_completions(
             {
                 "index": 0,
                 "message": {
-                    "role": "assistant",
-                    "content": response_text or None,
-                    **({"tool_calls": meta["tool_calls"]} if meta.get("tool_calls") else {}),
+                    **response_message,
                     **({"reasoning_content": meta["reasoning"]} if meta.get("reasoning") else {}),
                 },
-                "finish_reason": meta.get("finish_reason", "stop"),
+                "finish_reason": finish_reason,
             }
         ],
         "usage": {
