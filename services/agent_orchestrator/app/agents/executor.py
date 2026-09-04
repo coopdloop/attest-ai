@@ -51,11 +51,18 @@ class AgentExecutor:
         model: str,
         messages: list[dict[str, str]],
         max_iterations: int = 10,
+        client_tools: list[dict] | None = None,
+        tool_choice: Any | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> tuple[str, list[str], dict]:
         """
         Execute the agent loop.
         Returns (final_response_text, attestation_entry_ids, meta).
-        meta includes: usage, cost_usd, latency_ms, model, reasoning.
+        meta includes: usage, cost_usd, latency_ms, model, reasoning, and
+        (when the model calls a tool the caller owns, not an MCP-bound one)
+        tool_calls + finish_reason="tool_calls" so the caller can execute
+        them itself and continue the conversation, exactly like a direct
+        OpenRouter/OpenAI tool-calling round trip.
         """
         import time as _time
         run_start = _time.monotonic()
@@ -67,7 +74,7 @@ class AgentExecutor:
         policy_version = str(harness.get("version", "") or harness.get("definition", {}).get("policy_version", ""))
         guardrails = GuardrailEngine.from_harness(harness)
 
-        tools = self._build_tool_definitions(tool_bindings)
+        tools = self._merge_tools(tool_bindings, client_tools)
         full_messages = [{"role": "system", "content": system_context}] + list(messages) if system_context else list(messages)
 
         attestation_ids: list[str] = []
@@ -89,8 +96,10 @@ class AgentExecutor:
                     model=model,
                     messages=full_messages,
                     tools=tools if tools else None,
-                    tool_choice="auto" if tools else None,
+                    tool_choice=(tool_choice if tool_choice is not None else ("auto" if tools else None)),
                 )
+                if extra_params:
+                    kwargs.update(extra_params)
                 if model.startswith("openrouter/") and self._openrouter_key:
                     kwargs["api_key"] = self._openrouter_key
                     kwargs["api_base"] = "https://openrouter.ai/api/v1"
@@ -136,6 +145,22 @@ class AgentExecutor:
                 if bundle:
                     meta["attestation_bundle"] = bundle
                 return final_text, attestation_ids, meta
+
+            # If the model called a tool the caller owns (not one bound to an
+            # MCP server on this harness), we can't execute it server-side —
+            # hand it back to the caller to run, like a direct OpenRouter/OpenAI
+            # tool-calling round trip.
+            if any(not self._is_mcp_tool_call(tc.function.name, tool_bindings) for tc in message.tool_calls):
+                meta["latency_ms"] = round((_time.monotonic() - run_start) * 1000)
+                meta["tool_calls"] = [tc.model_dump() for tc in message.tool_calls]
+                meta["finish_reason"] = "tool_calls"
+                await self._emit_trace(session_id, org_id, "tool_calls_deferred", {
+                    "tool_calls": meta["tool_calls"],
+                }, attestation_ids)
+                bundle = await self._finalize_session(session_id, org_id, model, policy_version)
+                if bundle:
+                    meta["attestation_bundle"] = bundle
+                return message.content or "", attestation_ids, meta
 
             # Process tool calls
             full_messages.append(message.model_dump())
@@ -204,12 +229,20 @@ class AgentExecutor:
         model: str,
         messages: list[dict[str, str]],
         max_iterations: int = 10,
+        client_tools: list[dict] | None = None,
+        tool_choice: Any | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> AsyncIterator[str]:
         """
         Async generator that yields SSE strings.
         Text chunks:  data: {...}\n\n
         Meta event:   event: meta\ndata: {...}\n\n
         Done:         data: [DONE]\n\n
+
+        If the model calls a tool the caller owns (not MCP-bound), a
+        delta.tool_calls chunk is emitted and the stream ends with
+        finish_reason="tool_calls" so the caller can execute it and continue
+        the conversation itself, matching direct OpenRouter/OpenAI behavior.
         """
         import time as _time
 
@@ -219,7 +252,7 @@ class AgentExecutor:
         tool_bindings  = harness.get("definition", {}).get("tool_bindings", [])
         policy_version = str(harness.get("version", "") or harness.get("definition", {}).get("policy_version", ""))
         guardrails = GuardrailEngine.from_harness(harness)
-        tools = self._build_tool_definitions(tool_bindings)
+        tools = self._merge_tools(tool_bindings, client_tools)
         full_messages = (
             [{"role": "system", "content": system_context}] + list(messages)
             if system_context else list(messages)
@@ -253,10 +286,12 @@ class AgentExecutor:
                     model=model,
                     messages=full_messages,
                     tools=tools if tools else None,
-                    tool_choice="auto" if tools else None,
+                    tool_choice=(tool_choice if tool_choice is not None else ("auto" if tools else None)),
                     stream=True,
                     stream_options={"include_usage": True},
                 )
+                if extra_params:
+                    kwargs.update(extra_params)
                 if model.startswith("openrouter/") and self._openrouter_key:
                     kwargs["api_key"]  = self._openrouter_key
                     kwargs["api_base"] = "https://openrouter.ai/api/v1"
@@ -346,9 +381,28 @@ class AgentExecutor:
                 except Exception:
                     break
 
+                stream_tool_calls = getattr(message, "tool_calls", None) or []
+
+                # If the model called a tool the caller owns (not MCP-bound),
+                # hand it back instead of trying to execute it ourselves.
+                if any(not self._is_mcp_tool_call(tc.function.name, tool_bindings) for tc in stream_tool_calls):
+                    tc_payload = [tc.model_dump() for tc in stream_tool_calls]
+                    delta_chunk = {
+                        "id": chatcmpl_id,
+                        "object": "chat.completion.chunk",
+                        "choices": [{"index": 0, "delta": {"tool_calls": tc_payload}, "finish_reason": None}],
+                    }
+                    yield f"data: {json.dumps(delta_chunk)}\n\n"
+                    meta["tool_calls"] = tc_payload
+                    meta["finish_reason"] = "tool_calls"
+                    await self._emit_trace(session_id, org_id, "tool_calls_deferred", {
+                        "tool_calls": tc_payload,
+                    }, attestation_ids)
+                    break
+
                 full_messages.append(message.model_dump())
 
-                for tool_call in (getattr(message, "tool_calls", None) or []):
+                for tool_call in stream_tool_calls:
                     fn_name = tool_call.function.name
                     fn_args = json.loads(tool_call.function.arguments or "{}")
                     server, tool = self._resolve_tool(fn_name, tool_bindings)
@@ -400,7 +454,7 @@ class AgentExecutor:
         stop_chunk = {
             "id": chatcmpl_id,
             "object": "chat.completion.chunk",
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "delta": {}, "finish_reason": meta.get("finish_reason", "stop")}],
         }
         yield f"data: {json.dumps(stop_chunk)}\n\n"
         yield f"event: meta\ndata: {json.dumps(meta)}\n\n"
@@ -450,6 +504,29 @@ class AgentExecutor:
                     },
                 })
         return tools
+
+    def _merge_tools(self, tool_bindings: list[dict], client_tools: list[dict] | None) -> list[dict]:
+        """Caller-supplied tools (client-side, e.g. a coding agent's own tool
+        set) take priority; harness/MCP-bound tools are appended if not
+        already named by the caller."""
+        tools = list(client_tools or [])
+        names = {t.get("function", {}).get("name") for t in tools}
+        for t in self._build_tool_definitions(tool_bindings):
+            name = t["function"]["name"]
+            if name not in names:
+                tools.append(t)
+                names.add(name)
+        return tools
+
+    def _is_mcp_tool_call(self, fn_name: str, tool_bindings: list[dict]) -> bool:
+        """True if fn_name is bound to an MCP server this executor can call
+        directly. False means it's a tool the caller owns and must execute
+        itself (client-side tool calling)."""
+        if "__" in fn_name:
+            server = fn_name.split("__", 1)[0]
+            if any(b.get("server") == server for b in tool_bindings):
+                return True
+        return any(fn_name in b.get("tools", []) for b in tool_bindings)
 
     def _resolve_tool(self, fn_name: str, tool_bindings: list[dict]) -> tuple[str, str]:
         """Resolve a LLM-named function (server__tool) back to (server, tool)."""

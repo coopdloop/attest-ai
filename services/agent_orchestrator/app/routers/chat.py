@@ -67,6 +67,12 @@ class ChatMessage(BaseModel):
 
     role: str
     content: str | list[Any] | None = None
+    # Tool-calling fields — required to round-trip a multi-turn tool
+    # conversation (assistant turn that called a tool, and the tool's
+    # result turn) the same way OpenRouter/OpenAI do.
+    tool_calls: list[dict[str, Any]] | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
 
     @field_validator("content", mode="before")
     @classmethod
@@ -83,6 +89,16 @@ class ChatMessage(BaseModel):
             return " ".join(p for p in parts if p)
         return v
 
+    def to_llm_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"role": self.role, "content": self.content}
+        if self.tool_calls is not None:
+            d["tool_calls"] = self.tool_calls
+        if self.tool_call_id is not None:
+            d["tool_call_id"] = self.tool_call_id
+        if self.name is not None:
+            d["name"] = self.name
+        return d
+
 
 class ChatCompletionsRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -91,6 +107,25 @@ class ChatCompletionsRequest(BaseModel):
     messages: list[ChatMessage]
     stream: bool = False
     temperature: float | None = None
+    # Standard OpenAI-compatible params — forwarded to LiteLLM so a client
+    # driving its own tool calls (like it would directly against OpenRouter)
+    # keeps working through this gateway.
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: Any | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    stop: Any | None = None
+    parallel_tool_calls: bool | None = None
+
+    def extra_params(self) -> dict[str, Any]:
+        params = {
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "top_p": self.top_p,
+            "stop": self.stop,
+            "parallel_tool_calls": self.parallel_tool_calls,
+        }
+        return {k: v for k, v in params.items() if v is not None}
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +186,7 @@ async def chat_completions(
 
     # Run agent
     executor = request.app.state.executor
-    messages = [{"role": m.role, "content": m.content} for m in req.messages]
+    messages = [m.to_llm_dict() for m in req.messages]
 
     agent_config = await pool.fetchrow(
         "SELECT default_model, harness_id FROM agent_configs WHERE id = $1", uuid.UUID(agent_id)
@@ -176,6 +211,9 @@ async def chat_completions(
                 harness_slug=harness_slug,
                 model=model,
                 messages=messages,
+                client_tools=req.tools,
+                tool_choice=req.tool_choice,
+                extra_params=req.extra_params(),
             ):
                 # Capture meta event before forwarding
                 if sse_str.startswith("event: meta\n"):
@@ -216,6 +254,9 @@ async def chat_completions(
         harness_slug=harness_slug,
         model=model,
         messages=messages,
+        client_tools=req.tools,
+        tool_choice=req.tool_choice,
+        extra_params=req.extra_params(),
     )
 
     usage = meta.get("usage", {})
@@ -234,10 +275,11 @@ async def chat_completions(
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": response_text,
+                    "content": response_text or None,
+                    **({"tool_calls": meta["tool_calls"]} if meta.get("tool_calls") else {}),
                     **({"reasoning_content": meta["reasoning"]} if meta.get("reasoning") else {}),
                 },
-                "finish_reason": "stop",
+                "finish_reason": meta.get("finish_reason", "stop"),
             }
         ],
         "usage": {
