@@ -165,6 +165,16 @@ export const analytics = {
     tqs<{ models: ModelStat[] }>(`/analytics/by-model?org_id=${orgId()}&window=${window}`),
   recent: (limit = 15) =>
     tqs<{ sessions: RecentSession[] }>(`/analytics/recent?org_id=${orgId()}&limit=${limit}`),
+  log: (params: { window?: string; model?: string; status?: string; mode?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams({ org_id: orgId() })
+    if (params.window) qs.set('window', params.window)
+    if (params.model)  qs.set('model', params.model)
+    if (params.status) qs.set('status', params.status)
+    if (params.mode)   qs.set('mode', params.mode)
+    qs.set('limit', String(params.limit ?? 25))
+    qs.set('offset', String(params.offset ?? 0))
+    return tqs<LogResp>(`/analytics/log?${qs.toString()}`)
+  },
 }
 
 export const trust = {
@@ -200,6 +210,14 @@ export interface ModelStat {
 export interface RecentSession {
   session_id: string; model: string; mode: string; status: string
   tokens: number; cost_usd: number; latency_ms: number; started_at: string
+}
+export interface LogEntry {
+  turn_id: string; session_id: string; model: string; mode: string; status: string
+  input_tokens: number; output_tokens: number
+  cost_usd: number; latency_ms: number; started_at: string
+}
+export interface LogResp {
+  items: LogEntry[]; total: number; limit: number; offset: number
 }
 export interface TrustScoreResp {
   window: string; total_sessions: number; completed_sessions: number

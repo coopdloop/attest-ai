@@ -230,6 +230,77 @@ func (h *QueryHandler) AnalyticsRecent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"sessions": items})
 }
 
+// GET /analytics/log?org_id=&window=7d&model=&status=&mode=&limit=25&offset=0
+// Paginated, filterable request log — every model call (one row per turn,
+// since a session can hold several turns), like an OpenRouter-style Activity
+// log. Powers the Discover page.
+func (h *QueryHandler) AnalyticsLog(c *gin.Context) {
+	orgID := c.Query("org_id")
+	if orgID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "org_id required"})
+		return
+	}
+	since := windowStart(c.DefaultQuery("window", "7d"))
+	model := c.Query("model")
+	status := c.Query("status")
+	mode := c.Query("mode")
+
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "25"))
+	if limit <= 0 || limit > 100 {
+		limit = 25
+	}
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if offset < 0 {
+		offset = 0
+	}
+	ctx := c.Request.Context()
+
+	const where = `
+		FROM turns t
+		JOIN sessions s ON s.id = t.session_id
+		WHERE t.org_id = $1 AND t.started_at >= $2
+		  AND ($3 = '' OR COALESCE(t.model_id, s.model_id, 'unknown') = $3)
+		  AND ($4 = '' OR t.status::text = $4)
+		  AND ($5 = '' OR s.mode::text = $5)`
+
+	var total int
+	if err := h.db.QueryRow(ctx, `SELECT COUNT(*)`+where, orgID, since, model, status, mode).Scan(&total); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "log count query failed"})
+		return
+	}
+
+	rows, err := h.db.Query(ctx, `
+		SELECT t.id, t.session_id, COALESCE(t.model_id, s.model_id, 'unknown'), s.mode::text, t.status::text,
+		       COALESCE(t.input_tokens, 0), COALESCE(t.output_tokens, 0),
+		       COALESCE(t.cost_usd, 0), COALESCE(t.latency_ms, 0), t.started_at`+where+`
+		ORDER BY t.started_at DESC LIMIT $6 OFFSET $7`,
+		orgID, since, model, status, mode, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "log query failed"})
+		return
+	}
+	defer rows.Close()
+
+	items := []gin.H{}
+	for rows.Next() {
+		var turnID, sessionID, modelID, sessionMode, turnStatus string
+		var inTok, outTok, latency int
+		var cost float64
+		var startedAt time.Time
+		if err := rows.Scan(&turnID, &sessionID, &modelID, &sessionMode, &turnStatus,
+			&inTok, &outTok, &cost, &latency, &startedAt); err != nil {
+			continue
+		}
+		items = append(items, gin.H{
+			"turn_id": turnID, "session_id": sessionID, "model": modelID,
+			"mode": sessionMode, "status": turnStatus,
+			"input_tokens": inTok, "output_tokens": outTok,
+			"cost_usd": cost, "latency_ms": latency, "started_at": startedAt,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "limit": limit, "offset": offset})
+}
+
 // windowStart converts a window token (24h, 7d, 30d, 90d) into a start time.
 func windowStart(window string) time.Time {
 	now := time.Now().UTC()

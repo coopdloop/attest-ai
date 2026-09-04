@@ -70,6 +70,7 @@ func main() {
 	r.GET("/analytics/timeseries", h.AnalyticsTimeseries)
 	r.GET("/analytics/by-model", h.AnalyticsByModel)
 	r.GET("/analytics/recent", h.AnalyticsRecent)
+	r.GET("/analytics/log", h.AnalyticsLog)
 
 	// Trust Center — org-wide attestation verification + public receipts.
 	r.GET("/attestation/trust-score", h.TrustScore)
