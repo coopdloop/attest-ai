@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { analytics, type LogEntry, type ModelStat } from '@/lib/api'
+import { TraceDrawer } from '@/components/trace/TraceDrawer'
 
 const WINDOWS = ['24h', '7d', '30d', '90d', 'all'] as const
 const STATUSES = ['', 'completed', 'failed', 'streaming', 'pending'] as const
@@ -37,6 +38,7 @@ export default function DiscoverPage() {
   const [models, setModels]    = useState<ModelStat[]>([])
   const [loading, setLoading]  = useState(true)
   const [error, setError]      = useState<string | null>(null)
+  const [openSessionId, setOpenSessionId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -117,7 +119,7 @@ export default function DiscoverPage() {
                 {items.map(it => (
                   <tr
                     key={it.turn_id}
-                    onClick={() => { window.location.href = `/traces/${it.session_id}` }}
+                    onClick={() => setOpenSessionId(it.session_id)}
                     className="border-b border-gray-800/40 hover:bg-gray-800/40 cursor-pointer transition-colors"
                   >
                     <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap">{fmtDate(it.started_at)}</td>
@@ -169,6 +171,8 @@ export default function DiscoverPage() {
           </div>
         </div>
       </div>
+
+      <TraceDrawer sessionId={openSessionId} onClose={() => setOpenSessionId(null)} />
     </div>
   )
 }
