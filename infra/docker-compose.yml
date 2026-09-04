@@ -106,6 +106,27 @@ services:
       postgres:
         condition: service_healthy
 
+  # Generates the RS256 keypair auth_service signs JWTs with, so the stack comes
+  # up on a fresh clone with no manual key provisioning. Idempotent: existing
+  # keys are left untouched, so restarts don't invalidate issued tokens.
+  jwt_keygen:
+    image: alpine/openssl:3.5.8
+    entrypoint: /bin/sh
+    command:
+      - -ec
+      - |
+        if [ -s /keys/jwt_private.pem ] && [ -s /keys/jwt_public.pem ]; then
+          echo "jwt keypair already present, leaving it alone"
+          exit 0
+        fi
+        echo "generating RS256 keypair in /keys"
+        openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /keys/jwt_private.pem
+        openssl rsa -in /keys/jwt_private.pem -pubout -out /keys/jwt_public.pem
+        chmod 600 /keys/jwt_private.pem
+        chmod 644 /keys/jwt_public.pem
+    volumes:
+      - auth_keys:/keys
+
   auth_service:
     build:
       context: ../services/auth_service
@@ -125,6 +146,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      jwt_keygen:
+        condition: service_completed_successfully
 
   attestation_service:
     build:
@@ -184,9 +207,6 @@ services:
       ORCHESTRATOR_URL: http://agent_orchestrator:8000
       ATTESTATION_SERVICE_URL: http://attestation_service:8082
       REDIS_URL: redis://redis:6379/0
-      JWT_PUBLIC_KEY_PATH: /keys/jwt_public.pem
-    volumes:
-      - auth_keys:/keys:ro
     ports:
       - "8080:8080"
     depends_on:

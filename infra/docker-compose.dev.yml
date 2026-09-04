@@ -23,9 +23,6 @@ services:
     environment:
       LOG_LEVEL: debug
       SINGLE_USER_MODE: "true"
-    # bind-mount local keys so the RSA keypair is available without a separate init step
-    volumes:
-      - ./keys:/keys
 
   attestation_service:
     environment:
@@ -46,9 +43,6 @@ services:
   api_gateway:
     environment:
       LOG_LEVEL: debug
-    # same keys volume so gateway can read jwt_public.pem
-    volumes:
-      - ./keys:/keys:ro
 
   threat_intel_agent_tools:
     env_file:
